@@ -1,0 +1,232 @@
+# A production-shaped Postal installation for testing the management API.
+#
+# This is deliberately separate from docker-compose.smoke.yml. The smoke stack
+# is throwaway: it wipes its database on every run, seeds a fixed dataset and
+# tears everything down afterwards. This stack persists. Bring it up once, keep
+# it up, and drive it from the host with curl and Playwright:
+#
+#   ./script/production/run.ps1              # bootstrap plus every test stage
+#
+# That one command is all most runs need. The stages it calls are also usable on
+# their own, which is what to reach for when only one of them is in question:
+#
+#   ./script/production/bootstrap.ps1        # one time: config, image, schema, admin, token
+#   ./script/production/token-lifecycle.ps1
+#   ./script/production/api-sweep.ps1
+#   ./script/production/crosscheck.ps1
+#   ./script/production/cleanup.ps1        # only after an interrupted run
+#
+# doc/api/testing.md explains what each stage proves and why four of them are
+# not one.
+#
+# It is "production" in the senses that matter for testing the API: it runs
+# under RAILS_ENVIRONMENT=production, it is built from the default Dockerfile
+# target so assets are precompiled and the web UI works, it keeps its data in a
+# named volume, and it reads a real postal.yml and a real DKIM signing key from
+# ./config rather than from the CI fixtures.
+#
+# It is NOT production in the senses that would need infrastructure this
+# machine does not have: there is no TLS, no real DNS for domain verification,
+# and by default no mail delivery. Those are behind the 'mail' profile below.
+#
+# ---------------------------------------------------------------------------
+# Configuration
+#
+# Everything except the Rails secret key lives in config/postal.yml, which is
+# mounted at /config. That path is what POSTAL_CONFIG_FILE_PATH in the
+# Dockerfile already points at, and postal.signing_key_path defaults to
+# $config-file-root/signing.key, so both resolve without being overridden.
+#
+# config/postal.yml, config/signing.key and .env are all listed in .gitignore,
+# so nothing generated here can be committed by accident. bootstrap.ps1 writes
+# all three.
+#
+# The port is published on 127.0.0.1 only. There is no TLS in front of this
+# server and every request is authenticated with a bearer-style token, so it
+# must not be reachable from the network.
+
+# An explicit project name. Compose derives one from the containing directory,
+# and docker-compose.yml and docker-compose.smoke.yml live in this same
+# directory, so without this all three would be the project 'postal' and would
+# share containers, networks and volumes. That is how the smoke stack's
+# `down -v --remove-orphans` ends up deleting the MariaDB the RSpec suite is
+# using; naming the project keeps this stack's data out of reach of the others.
+name: postal-production
+
+# Each service begins by piping script/production/normalize-crlf.sh through sed
+# into bash, which undoes the CRLF line endings a Windows checkout bakes into
+# the image. That script explains why it has to be invoked that way rather than
+# executed directly. It is a no-op on a Linux checkout.
+
+# Shared by every service. The bootstrap service extends this with the values
+# which only it needs, which is why it lives here rather than being anchored to
+# that service's own environment block.
+x-postal-env: &postal-env
+  RAILS_ENVIRONMENT: production
+  # The variable is RAILS_SECRET_KEY, which is the environment name for
+  # Postal::Config.rails.secret_key. config/initializers/secret_key.rb reads
+  # that and falls back to SecureRandom.hex when it is nil, so passing the
+  # SECRET_KEY_BASE that Rails itself uses instead would appear to work while
+  # giving each container a different key and invalidating every session cookie
+  # on each restart.
+  RAILS_SECRET_KEY: ${RAILS_SECRET_KEY:?set RAILS_SECRET_KEY in .env}
+  BIND_ADDRESS: 0.0.0.0
+  PORT: "5000"
+  # root rather than a scoped user, because Postal creates one MariaDB schema
+  # per server named postal-server-<id> in addition to the main postal schema.
+  # A real deployment should use a user granted on `postal`.* and
+  # `postal-server-%`.* and nothing else.
+  MAIN_DB_HOST: mariadb
+  MAIN_DB_USERNAME: root
+  MAIN_DB_PASSWORD: ${MAIN_DB_PASSWORD:?set MAIN_DB_PASSWORD in .env}
+  MESSAGE_DB_HOST: mariadb
+  MESSAGE_DB_USERNAME: root
+  MESSAGE_DB_PASSWORD: ${MAIN_DB_PASSWORD:?set MAIN_DB_PASSWORD in .env}
+  RAILS_LOG_ENABLED: "true"
+  WAIT_FOR_TIMEOUT: "90"
+  WAIT_FOR_TARGETS: mariadb:3306
+
+services:
+
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      # The root password comes from .env so that it is never written into a
+      # file which could be committed.
+      MARIADB_ROOT_PASSWORD: ${MAIN_DB_PASSWORD:?set MAIN_DB_PASSWORD in .env}
+      MARIADB_DATABASE: postal
+    volumes:
+      - postal-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+      start_period: 10s
+
+  # One-shot: creates the schema and the initial admin user and API token.
+  # Safe to re-run. It is idempotent, and because the data volume persists the
+  # schema load is skipped on every run after the first.
+  #
+  #   docker compose -f docker-compose.production.yml run --rm bootstrap
+  bootstrap:
+    image: ${POSTAL_IMAGE:-postal-production:local}
+    profiles: ["setup"]
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    # The image runs as the unprivileged 'postal' user. It needs root here only
+    # because a freshly created named volume is owned by root.
+    user: root
+    environment:
+      <<: *postal-env
+      # Read by script/production/bootstrap.rb. The password has to arrive this
+      # way rather than through postal.yml because it is also the MariaDB root
+      # password's neighbour in .env and must never be written to a file which
+      # could be committed.
+      POSTAL_ADMIN_EMAIL: ${POSTAL_ADMIN_EMAIL:-admin@localhost}
+      POSTAL_ADMIN_PASSWORD: ${POSTAL_ADMIN_PASSWORD:?set POSTAL_ADMIN_PASSWORD in .env}
+      POSTAL_ORG_PERMALINK: ${POSTAL_ORG_PERMALINK:-production-test}
+      POSTAL_SERVER_PERMALINK: ${POSTAL_SERVER_PERMALINK:-production-test-server}
+      # Empty unless bootstrap.ps1 was given -NewToken.
+      POSTAL_FORCE_NEW_TOKEN: ${POSTAL_FORCE_NEW_TOKEN:-}
+    volumes:
+      - "./config:/config"
+      # The setup script is mounted rather than taken from the image so that a
+      # change to the seed data does not need a rebuild. Only this directory is
+      # mounted: the application itself still runs exactly what was built, which
+      # is the artifact under test.
+      #
+      # It is read-only, so normalize-crlf.sh cannot fix its line endings in
+      # place the way it does for the files baked into the image. It is piped
+      # through sed instead, which is the same trick used for that script below.
+      - "./script/production:/opt/postal/app/script/production:ro"
+    command:
+      - |
+        set -euo pipefail
+        sed 's/\r$$//' script/production/normalize-crlf.sh | bash
+        bundle exec rake db:create postal:update
+        sed 's/\r$$//' script/production/bootstrap.rb > /tmp/bootstrap.rb
+        bundle exec rails runner /tmp/bootstrap.rb
+
+  # The application under test: the web server, which serves both the JSON API
+  # and the web UI that Playwright drives.
+  postal:
+    image: ${POSTAL_IMAGE:-postal-production:local}
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    environment:
+      <<: *postal-env
+      # config/application.rb adds postal.web_hostname to config.hosts, so
+      # ActionDispatch::HostAuthorization answers 403 to any request whose Host
+      # header does not match it. The host side reaches this container through
+      # the published port on localhost, so that is the hostname to allow.
+      POSTAL_WEB_HOSTNAME: ${POSTAL_WEB_HOSTNAME:-localhost}
+    volumes:
+      - "./config:/config"
+    ports:
+      - "127.0.0.1:5000:5000"
+    command:
+      - |
+        set -euo pipefail
+        sed 's/\r$$//' script/production/normalize-crlf.sh | bash
+        exec bundle exec puma -C config/puma.rb
+
+  # Behind the 'mail' profile because delivering mail is out of scope for an
+  # API-only test and these two processes are noisy. Enable with:
+  #
+  #   docker compose -f docker-compose.production.yml --profile mail up -d
+  #
+  # The worker drains the queued_messages table. Postal v3 has no RabbitMQ: the
+  # queue is a database table and the worker is what pulls from it, so without
+  # this process a queued message stays queued forever and the queue endpoints
+  # only ever show it going in.
+  worker:
+    image: ${POSTAL_IMAGE:-postal-production:local}
+    profiles: ["mail"]
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    environment:
+      <<: *postal-env
+    volumes:
+      - "./config:/config"
+    command:
+      - |
+        set -euo pipefail
+        sed 's/\r$$//' script/production/normalize-crlf.sh | bash
+        exec bundle exec ruby script/worker.rb
+
+  # Accepts mail on port 25 so that a message can be injected into a server and
+  # then followed through the messages endpoints. Without it the only messages
+  # are the ones bootstrap.rb writes directly into the message database.
+  smtp:
+    image: ${POSTAL_IMAGE:-postal-production:local}
+    profiles: ["mail"]
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    environment:
+      <<: *postal-env
+      PORT: "25"
+    volumes:
+      - "./config:/config"
+    ports:
+      - "127.0.0.1:2525:25"
+    command:
+      - |
+        set -euo pipefail
+        sed 's/\r$$//' script/production/normalize-crlf.sh | bash
+        exec bundle exec ruby script/smtp_server.rb
+
+volumes:
+  postal-data:

@@ -1,0 +1,39 @@
+# Builds a production image from the upstream Dockerfile's `base` stage.
+#
+# The upstream `full` target cannot be used directly from a Windows checkout.
+# It runs `rake assets:precompile` at build time, and with core.autocrlf=true
+# the `COPY . .` in the base stage has already put CRLF line endings into
+# bin/rake. PATH resolves /opt/postal/app/bin ahead of the system gems, so
+# bundle exec rake lands on that binstub and dies with
+# "/usr/bin/env: 'ruby\r': No such file or directory" before compiling anything.
+#
+# The fix belongs in a .gitattributes, but adding one does not rewrite files
+# which are already checked out, so it would not help this build. Instead the
+# base image is normalized here and the precompile re-run. Nothing in the
+# upstream Dockerfile is modified, and on a Linux checkout the normalization is
+# a no-op which makes this equivalent to `--target full`.
+#
+# Build with:
+#
+#   docker build --target base -t postal-base:local .
+#   docker build -f Dockerfile.production -t postal-production:local .
+#
+# script/production/bootstrap.ps1 runs both.
+
+ARG BASE_IMAGE=postal-base:local
+FROM ${BASE_IMAGE}
+
+# Strip the CRLF endings which the base stage copied in. This is the same set of
+# extensions as script/production/normalize-crlf.sh, which runs at container
+# start for the services that do not need precompiled assets.
+RUN find . -type f \( -name '*.rb' -o -name '*.rake' -o -name '*.ru' -o -name '*.yml' \
+      -o -name '*.yaml' -o -name '*.erb' -o -name '*.haml' -o -name '*.sh' \
+      -o -name '*.js' -o -name '*.coffee' -o -name '*.scss' -o -name '*.css' \
+      -o -name 'Gemfile' -o -name 'Rakefile' \) \
+      -not -path './.git/*' -exec sed -i 's/\r$//' {} + \
+  && sed -i 's/\r$//' bin/*
+
+# Mirrors the upstream `full` target. uglifier needs a JavaScript runtime and
+# execjs uses the nodejs which the base stage installed.
+RUN RAILS_GROUPS=assets bundle exec rake assets:precompile
+RUN touch /opt/postal/app/public/assets/.prebuilt
