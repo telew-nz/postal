@@ -3,9 +3,9 @@
 The production deployment for Postal with the `/api/v2` management API.
 
 **The runbook is [`doc/deployment.md`](../doc/deployment.md).** It covers
-prerequisites, the Cloudflare Tunnel setup, DNS and deliverability, the security
-posture, backup, upgrade and rollback, and the failure modes worth knowing about
-before they happen.
+prerequisites, the Cloudflare Tunnel setup, DNS and deliverability, the inbound SMTP
+certificate, the security posture, backup, upgrade and rollback, and the failure
+modes worth knowing about before they happen.
 
 ## The short version
 
@@ -18,8 +18,15 @@ cd /opt/postal/deploy
 ./deploy.sh up                          # the stack, waiting for healthy
 ./deploy.sh admin                       # the administrator and the first API token
 ./deploy.sh dns                         # every record to publish
+./deploy.sh tls issue                   # optional: the inbound SMTP certificate
 ./deploy.sh doctor                      # assert it, rather than assume it
 ```
+
+`tls` is optional and needs two values the others do not: a Cloudflare API token
+scoped to Zone → DNS → Edit, and a real contact email address. Read
+[doc/deployment.md](../doc/deployment.md) before enabling it — inbound mail on port
+25 is opportunistic, so this is not a deliverability fix, and it commits the host to
+a renewal timer.
 
 `./deploy.sh help` lists everything; `./deploy.sh COMMAND --help` gives a command's
 own options.
@@ -34,11 +41,13 @@ own options.
 | `config/postal.yml` | Committed production configuration. Site-independent; every value that differs per installation arrives as an environment variable. |
 | `.env.example` | Every variable, with no real values and a note on where each comes from. `init` copies it to `.env`. |
 | `cloudflared/config.yml` | Reference ingress for a *locally-managed* tunnel. Not read by default. |
+| `acme/` | Generated. The ACME client's state: account key, issued certificates, and the per-domain configuration renewal reads. |
 | `lib/*.sh` | One file per command group. |
 | `lib/*.rb` | Helpers run inside the bootstrap container: `ensure_database.rb`, `ensure_admin.rb`, `register_ips.rb`, `doctor_checks.rb`. |
 
 Generated on the host, all gitignored: `.env`, `config/signing.key`,
-`database/init/`, `backups/`, `.upgrade-state`.
+`database/init/`, `backups/`, `.upgrade-state`, and — if `tls` is used — `acme/`,
+`config/smtp.cert` and `config/smtp.key`.
 
 ## Two things worth saying up front
 

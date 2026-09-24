@@ -52,6 +52,13 @@ BRANCH
 /deploy/config/smtp.cert
 /deploy/config/smtp.key
 
+# The ACME client's state directory, written by ./deploy.sh tls. Holds the
+# account private key, every issued certificate and key, and the per-domain
+# configuration acme.sh renews from. Losing it means losing the ability to renew
+# rather than the certificates themselves, but the account key is a credential
+# and the private keys under it are the SMTP server's.
+/deploy/acme/
+
 # Rendered by ./deploy.sh init from .env, so it contains the application
 # database password in a CREATE USER statement. The MariaDB image runs this
 # directory on first initialization of an empty volume.

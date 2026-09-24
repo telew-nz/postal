@@ -96,6 +96,19 @@ x-postal-env: &postal-env
   # Received-header loop detection. Should be the name the PTR record resolves
   # to. Note that EHLO does not present it at all -- see doc/deployment.md.
   POSTAL_SMTP_HOSTNAME: ${POSTAL_SMTP_HOSTNAME:?set POSTAL_SMTP_HOSTNAME in .env}
+  # Whether the SMTP server offers STARTTLS. Only the smtp process acts on this,
+  # but it is declared here rather than on that service alone: deploy.sh doctor
+  # reads the resolved configuration from a bootstrap container, and a value only
+  # the smtp service had would make doctor report tls_enabled false while the
+  # running SMTP server advertises STARTTLS. ./deploy.sh tls sets it.
+  #
+  # Left false with no certificate present, the SMTP server answers "502 TLS not
+  # available" to STARTTLS. Set true with no readable certificate, it answers
+  # "220 Ready to start TLS" and then the handshake raises, which server.rb logs
+  # at debug level before dropping the connection. Both are worse than the other
+  # depending on the sender, so ./deploy.sh tls sets this only after the files
+  # are in place and readable.
+  SMTP_SERVER_TLS_ENABLED: ${SMTP_SERVER_TLS_ENABLED:-false}
   # Must match postal.trusted_proxies in config/postal.yml. Both are the pinned
   # subnet declared at the bottom of this file; deploy.sh doctor checks that the
   # address cloudflared actually got is inside it.
@@ -350,6 +363,56 @@ services:
     volumes:
       - ./config:/config:ro
       - ./lib:/deploy-lib:ro
+    networks:
+      - postal
+
+  # One-shot ACME client, driven entirely by ./deploy.sh tls. With no arguments
+  # the image's own default runs, which is --help, for the same reason as
+  # bootstrap above: a bare `docker compose --profile tls run --rm acme` should
+  # list what is available rather than do something.
+  #
+  # Not a daemon, and not started by `up`. Renewal has to end with a restart of
+  # the smtp container, because SMTPServer::Server memoizes the parsed certificate
+  # on the class (`@tls_certificates ||=`) and traps only TERM and INT -- there is
+  # no reload signal, so a renewed certificate on disk is invisible to a running
+  # process. A restart is a host-side action, so this runs to completion and
+  # exits, and a systemd timer calls ./deploy.sh tls renew. The alternative -- a
+  # long-lived sidecar with /var/run/docker.sock mounted so that it could restart
+  # smtp itself -- would hand root-on-host to a container holding a credential
+  # that can write DNS records for the zone.
+  #
+  # Pinned to a version where cloudflared above is not. That difference is
+  # deliberate: this container holds an ACME account key and a Cloudflare token,
+  # so a moving tag is a supply-chain risk with an unusually large blast radius,
+  # and tracking upstream here buys nothing.
+  acme:
+    image: ${ACME_IMAGE:-neilpang/acme.sh:3.1.1}
+    profiles: ["tls"]
+    container_name: postal-acme
+    restart: "no"
+    logging: *postal-logging
+    environment:
+      # Where the image keeps account.conf, the account key and every issued
+      # certificate. It is already the image's own default and its declared
+      # VOLUME; restated so that the mount below documents itself instead of
+      # depending on a value baked into an image.
+      LE_CONFIG_HOME: /acme.sh
+      # Read directly by acme.sh's dns_cf plugin. A scoped API token with
+      # Zone/DNS/Edit on this zone and nothing else -- not the global API key,
+      # which this plugin also accepts as CF_Key plus CF_Email and which is an
+      # account-wide credential.
+      CF_Token: ${CLOUDFLARE_DNS_API_TOKEN:-}
+    volumes:
+      # The state directory, and it has to be this path. /root/.acme.sh holds the
+      # program itself -- /usr/local/bin/acme.sh is a symlink into it -- so
+      # mounting a host directory there destroys the tool with "not found".
+      - ./acme:/acme.sh
+      # ./config is deliberately absent. This container has a Cloudflare
+      # DNS-edit token, and ./config holds the DKIM signing key, so it is given no
+      # write access there. It installs into ./acme/install instead and
+      # ./deploy.sh tls copies the two files across, which is also the only place
+      # the chown to uid 999 can be done -- the container runs as root and would
+      # otherwise leave a key the SMTP server cannot read.
     networks:
       - postal
 

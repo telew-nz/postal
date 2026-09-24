@@ -60,6 +60,9 @@ doctor_cmd() {
   step "Inbound SMTP on port 25"
   doctor_smtp
 
+  step "Inbound SMTP TLS"
+  doctor_tls
+
   if [[ $quick == true ]]; then
     d_skip "everything which needs a container (--quick)"
   else
@@ -396,6 +399,212 @@ doctor_tcp_banner() {
 }
 
 # ---------------------------------------------------------------------------
+# The certificate the SMTP server presents
+#
+# Host-side like everything above it: the files are on the host and port 25 is
+# published on the host, so a check from here is a check from roughly where a
+# sender is. The one part which is not host-side is the resolved configuration,
+# which doctor_config reads from inside the installation -- and the two are
+# compared in doctor_tls_runtime below, because they disagree in exactly one
+# situation and it is a common one.
+
+doctor_tls() {
+  local from_env="${SMTP_SERVER_TLS_ENABLED:-false}"
+
+  if [[ $from_env != true ]]; then
+    d_skip "SMTP TLS (SMTP_SERVER_TLS_ENABLED is not true)"
+    # Reported rather than left silent. An installed certificate which nothing
+    # reads is indistinguishable from no certificate at all, and whoever installed
+    # it will believe TLS is on.
+    if [[ -f $TLS_CERT ]]; then
+      d_warn "config/smtp.cert exists but SMTP_SERVER_TLS_ENABLED is not true"
+      warn "  the certificate is installed and unused: ./deploy.sh tls install"
+    fi
+    return 0
+  fi
+
+  if [[ ! -f $TLS_CERT || ! -f $TLS_KEY ]]; then
+    d_fail "SMTP_SERVER_TLS_ENABLED is true but a certificate or key is missing"
+    fail "  STARTTLS is being advertised on a handshake which cannot complete, and"
+    fail "  that is worse than TLS being off: a sender enforcing MTA-STS will refuse"
+    fail "  to deliver rather than fall back to plaintext, while an opportunistic"
+    fail "  sender would have delivered over plaintext all along."
+    fail "  ./deploy.sh tls install, or set SMTP_SERVER_TLS_ENABLED=false"
+    return 0
+  fi
+
+  doctor_tls_permissions
+  doctor_tls_certificate
+  doctor_tls_names
+  doctor_tls_runtime
+  return 0
+}
+
+doctor_tls_permissions() {
+  local f owner mode
+  for f in "$TLS_CERT" "$TLS_KEY"; do
+    owner="$(stat -c '%u' "$f" 2>/dev/null || echo '?')"
+    mode="$(stat -c '%a' "$f" 2>/dev/null || echo '?')"
+    if [[ $owner == "$POSTAL_UID" ]]; then
+      d_ok "$(basename "$f") is owned by uid $POSTAL_UID (mode $mode)"
+    else
+      # Not merely untidy. The container reads these at process start through a
+      # read-only mount as uid 999, and a key it cannot read makes ssl_context
+      # raise. server.rb catches that, logs it and drops the connection.
+      d_fail "$(basename "$f") is owned by uid $owner; the container runs as $POSTAL_UID"
+      fail "  sudo chown $POSTAL_UID:$POSTAL_UID $f"
+    fi
+  done
+  return 0
+}
+
+doctor_tls_certificate() {
+  local count
+  count="$(tls_cert_chain_count "$TLS_CERT")"
+  if [[ ${count:-0} -ge 2 ]]; then
+    d_ok "the chain holds $count certificates, so the intermediate is presented"
+  else
+    # server.rb scans every PEM block in the file in order, assigns the first to
+    # the context and the rest to extra_chain_cert. A leaf-only file therefore
+    # gives an empty extra_chain_cert, and a peer without the intermediate cached
+    # cannot build a path to a trust anchor. Let's Encrypt's intermediate is
+    # widely cached, so this passes most of the time and then fails for one
+    # sender -- which is why it is a failure here rather than a warning.
+    d_fail "the chain holds ${count:-0} certificate(s); the intermediate is missing"
+    fail "  ./deploy.sh tls install   reinstalls the full chain"
+  fi
+
+  case "$(tls_key_matches_cert)" in
+    yes) d_ok "the private key matches the certificate" ;;
+    no)  d_fail "the private key does NOT match the certificate" ;;
+    *)   d_fail "openssl could not parse config/smtp.cert or config/smtp.key" ;;
+  esac
+
+  case "$(tls_is_self_signed)" in
+    yes)
+      # script/generate_tls_certificate.rb produces exactly this, at exactly this
+      # filename. Nothing else here would object to one being left behind.
+      d_fail "the certificate is self-signed"
+      fail "  no remote server will trust it: ./deploy.sh tls issue"
+      ;;
+    no)  d_ok "the certificate is issued by $(tls_cert_issuer)" ;;
+    *)   d_fail "the certificate's subject and issuer could not be read" ;;
+  esac
+
+  case "$(tls_expiry_verdict "$TLS_CERT")" in
+    expired)
+      d_fail "the certificate has EXPIRED"
+      fail "  senders which enforce MTA-STS will refuse to deliver here, and the"
+      fail "  renewal timer has been failing for at least 90 days"
+      ;;
+    week)
+      d_fail "the certificate expires within 7 days"
+      fail "  ./deploy.sh tls renew --force"
+      ;;
+    three-weeks)
+      # With a 30-day renewal window this means at least one renewal attempt has
+      # already failed. Worth a warning rather than a failure: mail still flows.
+      d_warn "the certificate expires within 21 days, so a renewal has already been missed"
+      warn "  ./deploy.sh tls renew --force, then check the timer is installed"
+      ;;
+    ok) d_ok "the certificate is valid for more than 21 days" ;;
+    *)  d_fail "openssl could not read config/smtp.cert" ;;
+  esac
+  return 0
+}
+
+doctor_tls_names() {
+  local sans missing n
+  sans="$(tls_cert_sans "$TLS_CERT")"
+  if [[ -z $sans ]]; then
+    d_fail "the certificate has no Subject Alternative Names"
+    fail "  peers match on SAN, not on the subject CN, so nothing will accept it"
+    return 0
+  fi
+
+  # Derived the way tls_load_domains does it, but without that function's
+  # precondition that DNS_MX_RECORDS is set. Doctor runs against installations in
+  # every state, and a missing MX list should not abort the rest of the audit.
+  if [[ -z ${DNS_MX_RECORDS:-} ]]; then
+    d_skip "MX name coverage (DNS_MX_RECORDS is empty)"
+    return 0
+  fi
+  tls_load_domains
+
+  missing="$(tls_missing_names)"
+  if [[ -n $missing ]]; then
+    d_fail "the certificate does not cover: $(printf '%s' "$missing" | tr '\n' ' ')"
+    fail "  a sender connecting to any of those names rejects the handshake."
+    fail "  ./deploy.sh tls issue   re-issues for the current name set -- a"
+    fail "  renewal will not add names, it renews the certificate as it stands."
+  else
+    local -a want=()
+    for n in ${TLS_DOMAINS[@]+"${TLS_DOMAINS[@]}"}; do want+=("$n"); done
+    d_ok "the certificate covers all ${#want[@]} required name(s)"
+  fi
+  return 0
+}
+
+# The two values which have to agree and are read in two different places.
+#
+# .env is what doctor_config and everything above reads. The container's own
+# environment is what the process was started with, and those diverge whenever
+# .env is edited and the container is restarted rather than recreated --
+# `docker compose restart` reuses the existing container and therefore its
+# original environment. The divergence is invisible from either side alone: .env
+# says TLS is on, the process says it is off, and the port simply stops offering
+# STARTTLS.
+doctor_tls_runtime() {
+  if ! service_running smtp; then
+    d_skip "the running container's TLS setting (smtp is not running)"
+    return 0
+  fi
+
+  local cid inside
+  cid="$(container_of smtp)"
+  inside="$(docker exec "$cid" printenv SMTP_SERVER_TLS_ENABLED 2>/dev/null || true)"
+  if [[ $inside == true ]]; then
+    d_ok "the running smtp container has SMTP_SERVER_TLS_ENABLED=true"
+  else
+    d_fail "the running smtp container has SMTP_SERVER_TLS_ENABLED='${inside:-unset}' but .env says true"
+    fail "  it was restarted rather than recreated, so it kept its old environment:"
+    fail "  docker compose up -d --no-deps smtp   (which ./deploy.sh tls install does)"
+    return 0
+  fi
+
+  # The handshake itself, which is the only check here answering the question
+  # anyone actually cares about. It earns its place: server.rb rescues
+  # OpenSSL::SSL::SSLError during negotiation and logs "SSL Negotiation Failed" at
+  # debug level, off in production, so a certificate every remote server rejects
+  # produces no output on this host at all.
+  local verdict detail
+  verdict="$(tls_probe_live)"
+  case $verdict in
+    ok)
+      d_ok "a real STARTTLS handshake on port 25 verified against this host's trust store"
+      ;;
+    nostarttls)
+      d_fail "port 25 completed no TLS handshake and presented no certificate"
+      fail "  the process has the flag set, so the certificate it loaded is unusable:"
+      fail "  ./deploy.sh logs smtp, and ./deploy.sh tls status"
+      ;;
+    unreachable)
+      d_warn "nothing answered a STARTTLS probe on 127.0.0.1:25"
+      ;;
+    untrusted\|*)
+      detail="${verdict#untrusted|}"
+      d_fail "the presented certificate did not verify: $detail"
+      fail "  This is what a remote sender sees, and it is the failure this host"
+      fail "  never reports: negotiation errors are logged at debug level."
+      ;;
+    *)
+      d_warn "unrecognised handshake probe result: $verdict"
+      ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # Inside the installation
 
 doctor_runner() {
@@ -496,11 +705,22 @@ doctor_config() {
     d_ok "use_ip_pools is false and the bridge-networked worker is running"
   fi
 
+  # The value the application itself resolved, which is the authoritative one
+  # because it accounts for the environment overriding the YAML. Compared against
+  # the running smtp container's own environment in doctor_tls_runtime: the two
+  # disagree whenever .env is edited and the container is restarted rather than
+  # recreated.
   v="$(json_get_raw "$DOCTOR_CFG" smtp_tls_enabled)"
-  if [[ $v == false ]]; then
+  if [[ $v == true ]]; then
+    d_ok "smtp_server.tls_enabled is true, so STARTTLS is offered on port 25"
+  else
     d_warn "smtp_server.tls_enabled is false, so inbound mail is not offered STARTTLS"
-    warn "  Deliberate for this deployment: Cloudflare does not terminate SMTP and"
-    warn "  a directly published port 25 would need certificates Postal renews."
+    warn "  Not a defect on its own: inbound SMTP is opportunistic, and a sender"
+    warn "  which cannot validate a session falls back to plaintext and still"
+    warn "  delivers. ./deploy.sh tls issue obtains a Let's Encrypt certificate and"
+    warn "  switches it on. What that does and does not buy is at the top of"
+    warn "  lib/tls.sh -- in short, it is what MTA-STS enforcement and mail-client"
+    warn "  submission require, not what ordinary server-to-server delivery needs."
   fi
 
   doctor_config_defaults
@@ -783,6 +1003,11 @@ Checks the deployment by observing it, not by reading its configuration back:
              application one. A 403 is HostAuthorization, never permissions.
   api        /api/v2/me is refused without a key and accepted with the saved one
   smtp       port 25 greets with 220 and announces postal.smtp_hostname
+  tls        the installed certificate: readable by uid 999, the intermediate
+             present, the key matching, not self-signed, not expiring, covering
+             every name the MX records point at -- and then a real STARTTLS
+             handshake against port 25, validated with this host's trust store.
+             Skipped when SMTP_SERVER_TLS_ENABLED is not true.
   config     what the application actually resolved, including whether it is
              still an example.com default
   database   the connecting user is not root and cannot read other schemas, the
@@ -794,8 +1019,9 @@ Checks the deployment by observing it, not by reading its configuration back:
 
   --quick   Skip the four groups which run a bootstrap container: config,
             database, dns and addresses. Everything else still runs, including
-            the `docker exec` probe of the origin, so this needs a working
-            docker and a stack which is up -- it just starts nothing itself.
+            the `docker exec` probe of the origin and of the smtp container, so
+            this needs a working docker and a stack which is up -- it just starts
+            nothing itself.
 
 Exits non-zero if any check failed.
 USAGE

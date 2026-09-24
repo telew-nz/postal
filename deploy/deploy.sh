@@ -37,17 +37,33 @@ unset _self _link
 # every other file assumes exist. The rest only define functions, so their order
 # among themselves does not matter -- but it is the order an operator would use
 # them in, which makes this list readable as the deployment sequence.
+#
+# The source= directives are for shellcheck -x. $LIB_DIR is only known at run
+# time, so without them shellcheck reports SC1091 and analyses deploy.sh alone,
+# which looks like a clean result and is not one.
 # shellcheck source=lib/common.sh
 . "$LIB_DIR/common.sh"
+# shellcheck source=lib/main.sh
 . "$LIB_DIR/main.sh"
+# shellcheck source=lib/init.sh
 . "$LIB_DIR/init.sh"
+# shellcheck source=lib/build.sh
 . "$LIB_DIR/build.sh"
+# shellcheck source=lib/migrate.sh
 . "$LIB_DIR/migrate.sh"
+# shellcheck source=lib/lifecycle.sh
 . "$LIB_DIR/lifecycle.sh"
+# shellcheck source=lib/setup.sh
 . "$LIB_DIR/setup.sh"
+# shellcheck source=lib/dns.sh
 . "$LIB_DIR/dns.sh"
+# shellcheck source=lib/tls.sh
+. "$LIB_DIR/tls.sh"
+# shellcheck source=lib/doctor.sh
 . "$LIB_DIR/doctor.sh"
+# shellcheck source=lib/backup.sh
 . "$LIB_DIR/backup.sh"
+# shellcheck source=lib/upgrade.sh
 . "$LIB_DIR/upgrade.sh"
 
 main "$@"

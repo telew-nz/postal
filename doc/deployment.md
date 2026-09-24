@@ -20,6 +20,7 @@ deployment.
 | `worker` | bridge, or host under IP pools | nothing | Delivery, and the scheduled tasks |
 | `cloudflared` | bridge at `172.28.0.254` | nothing | Outbound-only tunnel for HTTP |
 | `bootstrap` | bridge | nothing | One-shot runner `deploy.sh` uses for setup |
+| `acme` | bridge | nothing | One-shot ACME client, only under `--profile tls` |
 
 HTTP and SMTP take completely different paths, and the reason is not a matter of
 taste:
@@ -54,6 +55,11 @@ at all, and MariaDB is on loopback.
 * Outbound HTTPS to Cloudflare: TCP 443, plus UDP 7844 for QUIC unless cloudflared
   is run with `--protocol http2`.
 * Outbound DNS resolution (UDP/TCP 53) for MX, SPF, DKIM and PTR lookups.
+* For inbound SMTP TLS only: a **second** Cloudflare API token, scoped to
+  Zone → DNS → Edit on the one zone, and a real contact email address. See
+  [7. `tls`](#7-tls--the-inbound-smtp-certificate). Neither is needed by anything
+  else here — the tunnel token cannot be reused, because it is not a DNS
+  credential.
 
 ## 1. Clone at a tag
 
@@ -335,7 +341,136 @@ Then confirm what the internet actually resolves:
 ./deploy.sh doctor
 ```
 
-## 7. `doctor` — assert, don't assume
+## 7. `tls` — the inbound SMTP certificate
+
+Optional. Everything above this point is a working mail server without it.
+
+```bash
+./deploy.sh tls issue --staging   # against Let's Encrypt's staging CA
+./deploy.sh tls issue             # the real certificate
+./deploy.sh tls status
+```
+
+Obtains a certificate from Let's Encrypt using the **DNS-01** challenge and
+installs it where the SMTP server reads it. DNS-01 rather than HTTP-01 because
+there is nothing to serve the challenge from: port 25 is an SMTP listener, and the
+HTTPS origin is behind a tunnel on a different hostname. DNS-01 also does not
+require the validated name to be the name being served, which is what makes a
+certificate for the MX hostnames possible at all here.
+
+The names come from `POSTAL_SMTP_HOSTNAME` plus `DNS_MX_RECORDS`, deduplicated, in
+that order — the first becomes the certificate's common name and the directory
+acme.sh keeps its state in. Those are the names remote servers are told to connect
+to, which is what the certificate has to cover; note that `EHLO` does not present
+`smtp_hostname` at all, so a certificate for it is not what makes the banner name
+validate.
+
+### What each subcommand does
+
+| Command | Effect |
+| --- | --- |
+| `tls issue [--staging]` | Creates the `_acme-challenge` TXT records, waits for them to propagate, obtains the certificate, then runs `install`. Always passes `--force`, so it replaces a certificate that is not near expiry — that costs rate limit, which is why the limit is printed first |
+| `tls renew [--force]` | Renews the existing certificate **as it stands**, then installs it. Exits 0 and changes nothing when the certificate is not yet due |
+| `tls install` | Copies the pair into `config/`, sets ownership, flips `SMTP_SERVER_TLS_ENABLED`, recreates `smtp` |
+| `tls status` | Reads the installed certificate back: chain length, issuer, subject alternative names, expiry, whether the key matches |
+
+### Why `install` recreates the container rather than restarting it
+
+`SMTPServer::Server` parses the certificate **once per process** and memoizes it on
+the class (`@tls_certificates ||=`), and `prepare_environment` traps only `TERM` and
+`INT` — both of which shut the listener down. There is no reload signal, so a
+renewed certificate on disk is invisible to a running process.
+
+It also has to be `up -d --no-deps smtp`, not `restart`. `docker compose restart`
+reuses the existing container and therefore its original environment, so the new
+`SMTP_SERVER_TLS_ENABLED` never arrives: `.env` says TLS is on, the process says it
+is off, and anything reading `.env` agrees with `.env`. `doctor` compares the two
+and fails when they differ. The recreate drops in-flight SMTP connections, which
+`install` warns about and skips entirely when the certificate did not change.
+
+The file must be a **fullchain, leaf first**. `ssl_context` assigns the first
+certificate in the file to the context and everything after it to
+`extra_chain_cert`, so a leaf-only file presents no intermediate. Let's Encrypt's
+intermediate is widely cached, which means that passes most of the time and then
+fails for one sender — so `doctor` treats a chain of one as a failure.
+
+### What this does and does not buy you
+
+**Inbound mail on port 25 is opportunistic** (RFC 7435). A sender that cannot
+validate the session falls back to plaintext and still delivers, so for ordinary
+server-to-server mail a publicly trusted certificate behaves the same as a
+self-signed one. **This is not a deliverability fix**, and it will not move a spam
+score.
+
+What it is required for:
+
+* **MTA-STS** (RFC 8461). Gmail, Microsoft, Yahoo and Fastmail do validate, and a
+  policy in `enforce` mode refuses to deliver rather than downgrading. The
+  certificate is necessary but **not sufficient**: MTA-STS also needs the policy
+  document served over HTTPS at `mta-sts.<domain>` and a `_mta-sts` TXT record,
+  and Postal serves neither. Publishing a policy without both would stop inbound
+  mail from those providers.
+* **DANE** (RFC 7672), which additionally needs a DNSSEC-signed zone.
+* **Mail-client submission**, which validates like a browser and will not offer a
+  "continue anyway".
+
+Outbound delivery is unaffected either way: the worker negotiates STARTTLS with
+remote servers itself, per their advertised capabilities.
+
+### Renewal
+
+Renewal is driven from the host by a timer, not by a sidecar. A sidecar that could
+recreate `smtp` itself would need `/var/run/docker.sock`, which is root on the host,
+in a container holding a credential that can write DNS records for the zone.
+
+`./deploy.sh tls renew --help` prints a ready-made unit and timer pair. Twice daily
+is Let's Encrypt's own recommendation: with `ACME_RENEW_DAYS=30` on a 90-day
+certificate the window opens with a month of validity still to run, so about 60
+attempts precede expiry.
+`Persistent=true` matters — it runs a missed invocation after downtime rather than
+waiting for the next one, which is the difference between a host that was off and
+an expired certificate.
+
+A run where the certificate is not yet due exits 0 with no change, and that is the
+expected outcome for about two thirds of invocations. acme.sh signals it with its
+own code 2, which `tls renew` translates rather than reporting as a failure.
+
+### Rolling back
+
+Set `SMTP_SERVER_TLS_ENABLED=false` in `.env` and recreate `smtp`. Do not leave the
+flag true with the files removed: `client.rb` answers `220 Ready to start TLS`
+whenever `tls_enabled?` is true and then the handshake raises, which is worse than
+the clean `502 TLS not available` a sender handles by falling back to plaintext.
+`tls install` therefore only flips the flag after both files are in place and
+readable by uid 999.
+
+### Configuration
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `SMTP_SERVER_TLS_ENABLED` | `false` | In `x-postal-env`, so every Postal process sees the same value. `doctor` reads resolved configuration from a bootstrap container, and a value only `smtp` had would make it disagree with the running server |
+| `CLOUDFLARE_DNS_API_TOKEN` | — | Read by the `dns_cf` plugin as `CF_Token`. **Not** the tunnel token and **not** the global API key |
+| `ACME_CONTACT_EMAIL` | — | Required, and checked before anything is attempted. Let's Encrypt validates the domain against the public suffix list and rejects reserved names, so no placeholder works — and its `invalidContact` error arrives *after* the account key is created and does not name the address as the problem |
+| `ACME_RENEW_DAYS` | `30` | Days of validity remaining at which renewal is attempted |
+| `ACME_KEYLENGTH` | `2048` | RSA, not ECDSA: some MTAs still have TLS stacks that will not negotiate ECDSA, and a certificate the peer cannot use is worse than a larger handshake |
+| `ACME_IMAGE` | `neilpang/acme.sh:3.1.1` | Pinned, where `CLOUDFLARED_IMAGE` is `:latest`. This container holds an account key and a DNS-edit token, so a moving tag is a supply-chain risk with an unusually large blast radius |
+| `ACME_DEBUG` | unset | Set to `2` for the client's own trace |
+
+The client is pinned to a state directory at `/acme.sh` inside the container, and
+that path is not interchangeable. `/root/.acme.sh` holds the **program** —
+`/usr/local/bin/acme.sh` is a symlink into it — so mounting host state there
+destroys the tool with `acme.sh: not found`. acme.sh's own default CA is also
+ZeroSSL rather than Let's Encrypt, which is why every invocation here passes
+`--server` explicitly; the CA chosen at first issue is recorded per domain and is
+sticky.
+
+The `acme` container is deliberately **not** given `./config`. It holds a
+DNS-edit token and `./config` holds the DKIM signing key, so it installs into
+`./acme/install/` and `deploy.sh` copies the two files across on the host — which
+is also the only place the `chown` to uid 999 can happen, since the container runs
+as root and would otherwise leave a key the SMTP server cannot read.
+
+## 8. `doctor` — assert, don't assume
 
 ```bash
 ./deploy.sh doctor
@@ -354,6 +489,7 @@ nothing itself, though it still needs a working docker and a stack which is up.
 | `https` | `GET /api/v2/spec` through the tunnel, and the same request against the origin from inside |
 | `api` | `/api/v2/me` refused without a key, accepted with the saved one |
 | `smtp` | port 25 greets with `220` and announces `postal.smtp_hostname` |
+| `tls` | the certificate the SMTP server presents: chain length, key match, issuer, expiry, SAN coverage against the configured names, and a **live STARTTLS handshake** against port 25. Also compares `.env` against the running container's own environment |
 | `config` | what the application actually resolved, including whether any value is still an `example.com` default |
 | `database` | the connecting user is not `root` and cannot read other schemas; the schema is loaded; a worker holds the `tasks` role; the queue depth |
 | `dns` | PTR, SPF, DKIM, the MX A records and the tracking CNAME, resolved from inside the container |
@@ -381,6 +517,18 @@ process. Nothing in the web UI reports this.
 doctor asks what the internet sees, not what Postal is configured to ask. The image
 installs `curl` and `netcat` but neither `dig` nor `host`, so there is no resolver
 to shell out to.
+
+**The `tls` handshake is probed rather than read.** `server.rb` rescues
+`OpenSSL::SSL::SSLError` and logs `SSL Negotiation Failed` at **debug** level, which
+is off in production. A certificate that every remote server rejects therefore
+produces no output on this host at all — the mail simply arrives in plaintext, or
+does not arrive. So `doctor` runs `openssl s_client -starttls smtp
+-verify_return_error` against the published port and reports what a sender would
+conclude, distinguishing `untrusted` from `nostarttls` from `unreachable`.
+
+The group is skipped entirely when `SMTP_SERVER_TLS_ENABLED` is not `true`, which is
+the default and not a defect. It does warn if a certificate is installed and unused,
+because that is indistinguishable from having no certificate to whoever installed it.
 
 ## Security
 
@@ -457,11 +605,13 @@ directory, which is every message this installation has ever received. `reset` d
 it, separately, and asks you to type the hostname of the installation first.
 
 Container logs are rotated by the compose file — `json-file` with
-`POSTAL_LOG_MAX_SIZE` (default `50m`) and `POSTAL_LOG_MAX_FILE` (default `5`),
-about 1.2 GB across the six services. Docker's json-file driver has **no** size
-limit unless one is set, so a mail server left running will eventually fill the
-disk with logs, and a full disk is a worse failure than the one that filled it:
-MariaDB stops cleanly at best and corrupts at worst.
+`POSTAL_LOG_MAX_SIZE` (default `50m`) and `POSTAL_LOG_MAX_FILE` (default `5`), so
+250 MB per container and about 1.2 GB across the five that stay up (`bootstrap` and
+`acme` are one-shots and barely log). Every service in the table above inherits it,
+including the profiled ones. Docker's json-file driver has **no** size limit unless
+one is set, so a mail server left running will eventually fill the disk with logs,
+and a full disk is a worse failure than the one that filled it: MariaDB stops
+cleanly at best and corrupts at worst.
 
 ## Backup and restore
 
@@ -595,15 +745,23 @@ sending works fine this way, which is why pools are opt-in.
 
 These are decisions recorded here so they are not rediscovered as bugs.
 
-**Inbound SMTP has no TLS.** `smtp_server.tls_enabled` is `false`. Cloudflare does
-not terminate SMTP, so inbound STARTTLS on a directly-published port 25 would need a
-certificate on this host that something then has to renew. To enable opportunistic
-STARTTLS later, set `smtp_server.tls_enabled: true` and provide
-`tls_certificate_path` and `tls_private_key_path` — the schema defaults them to
-`$config-file-root/smtp.cert` and `smtp.key`, which is `/config` here, so files at
-`deploy/config/smtp.cert` and `deploy/config/smtp.key` would be picked up.
-**Outbound delivery is unaffected**: the worker negotiates STARTTLS with remote
-servers itself, per their advertised capabilities.
+**Inbound SMTP TLS is off by default.** `smtp_server.tls_enabled` is `false`, and
+that is a defensible default rather than an omission: inbound mail on port 25 is
+opportunistic, so a sender which cannot validate a session falls back to plaintext
+and still delivers. Enabling it needs a certificate that something then renews, and
+a renewal that nothing performs is an expiry that presents as senders quietly
+downgrading — no error on this host. [`tls`](#7-tls--the-inbound-smtp-certificate)
+implements the whole of it, including the timer, and that section is also where the
+limits of the benefit are stated: it is not a deliverability fix.
+**Outbound delivery is unaffected** either way: the worker negotiates STARTTLS with
+remote servers itself, per their advertised capabilities.
+
+**No MTA-STS policy is served.** The certificate `tls` obtains is a prerequisite for
+MTA-STS but not the whole of it — the policy document has to be served over HTTPS at
+`mta-sts.<domain>` and a `_mta-sts` TXT record published alongside it. Postal serves
+neither, and the tunnel's ingress is configured for one hostname. Publishing a policy
+in `enforce` mode without both would cause Gmail, Microsoft, Yahoo and Fastmail to
+refuse to deliver here at all, which is worse than not publishing one.
 
 **`EHLO` presents no hostname.** `app/lib/smtp_server/client.rb` answers
 `250-My capabilities are` where RFC 5321 puts the server's name. This is upstream
@@ -636,5 +794,11 @@ database changes only `main_db`/`message_db` and removes the loopback publish.
 | `EADDRNOTAVAIL` from the worker | An `IPAddress` is assigned but the worker is bridge-networked | Enable IP pools, or unassign the address |
 | Scheduled tasks not running, delivery fine | No worker holds the `tasks` role | `doctor` distinguishes absent from stale; check the worker's log |
 | DKIM fails at the recipient | `signing.key` not readable by uid 999, or the TXT record not published | `sudo chown 999:999`, then `./deploy.sh dns` and re-publish |
+| `tls issue` fails with `invalidContact` | Let's Encrypt rejected `ACME_CONTACT_EMAIL`. It validates the domain against the public suffix list and refuses reserved names | Use a real address. The error arrives after the account key is created and does not name the address, so it reads like an account problem |
+| `tls issue` fails creating the TXT record | `CLOUDFLARE_DNS_API_TOKEN` lacks Zone → DNS → Edit on the zone, or the name is not in a zone this account can write | Scope a token to the zone. The tunnel token is not a DNS credential and cannot be reused |
+| `acme.sh: not found` from the client | Host state mounted at `/root/.acme.sh`, which holds the **program** — `/usr/local/bin/acme.sh` is a symlink into it | Mount at `/acme.sh`, as the compose file does |
+| `tls renew` reports success but the certificate is unchanged | Not due yet. acme.sh returns its own code 2 for a skip, which `tls renew` reports as `ok` | Expected for about two thirds of timer runs. `tls renew --force` to override, `tls status` to see the expiry |
+| `.env` says TLS is on but port 25 offers no STARTTLS | The container was `restart`ed, which reuses the original environment | `docker compose up -d --no-deps smtp`, which `tls install` does. `doctor` compares `.env` against the running container and fails on the difference |
+| Senders silently fall back to plaintext | The certificate expired, presents no intermediate, or does not cover the MX name | `./deploy.sh tls status`, then `./deploy.sh doctor`. `server.rb` logs `SSL Negotiation Failed` at debug level, so nothing appears in production logs |
 | `deploy.sh: command not found` on a copied tree | CRLF in the shebang; the kernel fails `execve` with ENOENT | `sed -i 's/\r$//' deploy.sh lib/*.sh`, or clone the repository instead of copying it |
 | `./deploy.sh: Permission denied` | The executable bit did not survive the copy | `chmod +x deploy.sh`, or invoke it as `bash ./deploy.sh` |

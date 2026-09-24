@@ -35,6 +35,7 @@ main() {
 
     # Verification and reporting
     dns)       dns_cmd "$@" ;;
+    tls)       tls_cmd "$@" ;;
     doctor)    doctor_cmd "$@" ;;
 
     # Data
@@ -89,6 +90,8 @@ Setup, in the order a new installation needs them
   up                            Start the stack and wait for it to be healthy.
   admin                         Create the administrator and the first API token.
   dns                           Print every DNS record to publish.
+  tls issue|renew|status        A Let's Encrypt certificate for inbound SMTP,
+                                validated by DNS-01 through the Cloudflare API.
   doctor                        Verify the deployment by observing it.
 
 Operating

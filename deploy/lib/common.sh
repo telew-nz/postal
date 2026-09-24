@@ -21,6 +21,32 @@ DB_INIT_DIR="$DEPLOY_DIR/database/init"
 SIGNING_KEY="$CONFIG_DIR/signing.key"
 BACKUP_DEFAULT_DIR="$DEPLOY_DIR/backups"
 
+# The SMTP server's TLS material. These are not arbitrary paths: they are what
+# Postal's own schema resolves to. smtp_server.tls_certificate_path and
+# tls_private_key_path default to "$config-file-root/smtp.cert" and ".../smtp.key",
+# and $config-file-root is /config because ./config is mounted there by
+# x-postal-app below. Writing the certificate to these two paths is therefore
+# what makes it visible to the SMTP server, with no additional bind mount and no
+# override of either key.
+#
+# ./config is mounted read-only, so the container can read these but never write
+# them -- which is what makes host-side renewal safe.
+TLS_CERT="$CONFIG_DIR/smtp.cert"
+TLS_KEY="$CONFIG_DIR/smtp.key"
+
+# The ACME client's state directory, mounted at /acme.sh because that is where the
+# image's LE_CONFIG_HOME points. It is deliberately NOT /root/.acme.sh: that path
+# holds the program itself, and mounting a host directory over it makes the tool
+# unrunnable with "acme.sh: not found".
+ACME_DIR="$DEPLOY_DIR/acme"
+
+# Where the ACME client installs to, inside the state directory and therefore at
+# $ACME_INSTALL_DIR on the host. Kept separate from ./config so that the container
+# holding a Cloudflare DNS-edit token never has write access to the directory
+# holding the DKIM signing key; ./deploy.sh tls copies from here to there.
+ACME_INSTALL_SUBDIR="install"
+ACME_INSTALL_DIR="$ACME_DIR/$ACME_INSTALL_SUBDIR"
+
 # Passed to compose as --project-name rather than left to be derived from the
 # directory name, which is compose's default. The checkout location is not part of
 # this installation's identity: without a fixed name, checking out at
@@ -180,6 +206,11 @@ compose_setup() {
   compose --profile setup "$@"
 }
 
+# Compose including the one-shot TLS profile.
+compose_tls() {
+  compose --profile tls "$@"
+}
+
 # Run a one-shot command in the bootstrap container. Used for migrations, the
 # rails runner calls, and anything else that needs the application's own
 # environment rather than a shell on the host.
@@ -216,6 +247,20 @@ bootstrap_run() {
   # array is an unbound variable error under `set -u` before bash 4.4, and a
   # deployment tool should not depend on which bash the host happens to have.
   compose_setup run --rm -T ${envs[@]+"${envs[@]}"} bootstrap "$@"
+}
+
+# Run the ACME client.
+#
+# One-shot and --rm, not a daemon. Renewal has to end in a restart of the smtp
+# container, because SMTPServer::Server memoizes the parsed certificate on the
+# class (@tls_certificates ||=) and traps only TERM and INT -- there is no reload
+# signal. A restart is a host-side action, so the client runs one-shot from the
+# host and a timer drives it. The alternative, a sidecar with /var/run/docker.sock
+# mounted, would hand root-on-host to a container holding a DNS-edit token.
+#
+# -T for the same reason as run_bootstrap: the output is read by the caller.
+run_acme() {
+  compose_tls run --rm -T acme "$@"
 }
 
 # True when the given compose service has a running container.
@@ -360,6 +405,38 @@ require_image() {
   die "image '$image' is not present. Run ./deploy.sh build first."
 }
 
+# Make a file owned by the uid the containers run as. Every file under ./config
+# has to be, because the mount is read-only and the process reading it is not root.
+#
+# The failure mode is what makes this worth a helper rather than a chown at each
+# call site: neither of the two files it is used for announces that it could not
+# be read. An unreadable DKIM key produces mail which is delivered but does not
+# verify, visible only to the recipient's server. An unreadable SMTP key makes
+# STARTTLS fail at the handshake, which server.rb rescues and logs at debug level
+# -- off, in production.
+#
+# Returns non-zero rather than dying when the change needs privileges this shell
+# does not have, so that each caller decides whether that is fatal for it.
+ensure_owned_by_postal() {
+  local path=$1
+  [[ -e $path ]] || return 1
+
+  # Already correct, which is the common case on a re-run.
+  local owner
+  owner="$(stat -c '%u' "$path" 2>/dev/null || echo '?')"
+  if [[ $owner == "$POSTAL_UID" ]]; then
+    return 0
+  fi
+
+  if chown "$POSTAL_UID:$POSTAL_UID" "$path" 2>/dev/null; then
+    return 0
+  fi
+
+  warn "$path is owned by uid $owner, but the containers run as $POSTAL_UID."
+  warn "  sudo chown $POSTAL_UID:$POSTAL_UID $path"
+  return 1
+}
+
 # Fail unless the signing key is readable by the container's uid. The DKIM key is
 # the one file whose permissions are load-bearing and whose failure is silent:
 # ./config is mounted read-only, the container runs as uid 999, and a key it
@@ -369,8 +446,9 @@ require_signing_key() {
   [[ -f $SIGNING_KEY ]] ||
     die "$SIGNING_KEY is missing. Run ./deploy.sh init first."
 
-  if [[ $(id -u) -ne 0 ]] && ! stat -c '%u' "$SIGNING_KEY" 2>/dev/null | grep -qx "$POSTAL_UID"; then
-    warn "$SIGNING_KEY is not owned by uid $POSTAL_UID, which the container runs as."
-    warn "DKIM signing will fail until it is:  sudo chown $POSTAL_UID:$POSTAL_UID $SIGNING_KEY"
+  if [[ $(id -u) -ne 0 ]]; then
+    ensure_owned_by_postal "$SIGNING_KEY" ||
+      warn "DKIM signing will fail until the ownership above is fixed."
   fi
+  return 0
 }

@@ -85,11 +85,23 @@ message_db:
   database_name_prefix: postal-server
 
 smtp_server:
-  # Deliberately off. Cloudflare does not terminate SMTP, so inbound STARTTLS
-  # would need a certificate on this host that something then has to renew. To
-  # enable opportunistic STARTTLS later, set this to true and provide
-  # tls_certificate_path and tls_private_key_path -- the schema defaults them to
-  # $config-file-root/smtp.cert and smtp.key, which is /config here.
+  # Off here, and switched on from .env rather than by editing this file.
+  # SMTP_SERVER_TLS_ENABLED overrides it -- the environment source is pushed
+  # before the YAML one in lib/postal/config.rb -- which is what
+  # `./deploy.sh tls install` sets once a certificate exists and is readable.
+  # Keeping the switch in .env means this committed file stays site-independent
+  # and that enabling TLS is never a git change on a deployment host.
+  #
+  # Cloudflare does not terminate SMTP, so inbound STARTTLS needs a certificate
+  # on this host and something to renew it. `./deploy.sh tls` is that something:
+  # Let's Encrypt, DNS-01 through the Cloudflare API, and a host timer because the
+  # SMTP server reads its certificate once at process start and has no reload.
+  #
+  # tls_certificate_path and tls_private_key_path are deliberately absent. The
+  # schema defaults them to $config-file-root/smtp.cert and smtp.key, which is
+  # /config here, and ./config is already mounted there read-only -- so
+  # config/smtp.{cert,key} is where ./deploy.sh tls writes and setting the keys
+  # would only create a second source of truth to disagree with it.
   #
   # Outbound delivery is unaffected: the worker negotiates STARTTLS with remote
   # servers itself, per their advertised capabilities.
