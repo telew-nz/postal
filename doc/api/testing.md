@@ -1,6 +1,6 @@
 # Testing the management API
 
-The management API is covered by four layers of testing. Each one can fail while
+The management API is covered by three layers of testing. Each one can fail while
 the others pass, and the combination of which layers fail is what tells you where
 the bug is, so they are described here in terms of the question each one answers
 rather than in terms of how it works.

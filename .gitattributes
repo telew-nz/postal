@@ -28,7 +28,18 @@ bin/* text eol=lf
 
 # The deploy tooling and the image entrypoint are executed, not sourced.
 deploy/**/*.sh text eol=lf
-docker-entrypoint.sh text eol=lf
+
+# The image entrypoint. Dockerfile:45 copies docker/wait-for.sh to
+# /docker-entrypoint.sh, so this is the repository path rather than the path
+# inside the image -- naming the image path here would match nothing at all.
+# *.sh above already covers it; it is repeated because these are the line
+# endings the deployment depends on most directly. A CR in the shebang makes the
+# kernel fail execve with ENOENT, which Docker reports as
+# "exec /docker-entrypoint.sh: no such file or directory", and the container
+# never starts. docker-compose.production.yml has to override the entrypoint to
+# work around exactly that on a Windows checkout; deploy/docker-compose.yml does
+# not, because it is built from a clone where this attribute has been applied.
+docker/wait-for.sh text eol=lf
 
 # Never normalize anything binary. `text=auto` should detect these correctly,
 # but an explicit marker is cheaper than a corrupted image.

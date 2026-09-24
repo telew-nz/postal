@@ -65,9 +65,21 @@ On a Windows checkout those two commands do not work: there is no MSYS2
 toolchain for the native gem extensions, so the gems cannot be installed locally.
 Use `./script/test/run.ps1` instead, which runs both suites inside the CI image.
 
-The management API under `app/controllers/api/v2` has three further layers of
+The management API under `app/controllers/api/v2` has two further layers of
 testing beyond these, which run against real servers in Docker rather than in
 process: a smoke and OpenAPI contract suite, and a production harness which also
 cross-checks the API against the web UI with a real browser. See
 [doc/api/testing.md](doc/api/testing.md) for what each layer proves and how to run
 them.
+
+## Deploying
+
+Everything above is contributor tooling for a local checkout. The production
+deployment is a separate topology in [`deploy/`](deploy), driven by
+`deploy/deploy.sh` and documented in [doc/deployment.md](doc/deployment.md).
+
+The two are deliberately not shared, and `docker-compose.production.yml` is the
+name most likely to mislead about that: it is local Windows test tooling which
+happens to boot Rails in the production environment. It binds to loopback, runs
+MariaDB as `root`, has no TLS in front of it and leaves every `dns.*` key on its
+`postal.example.com` default. Do not deploy it.

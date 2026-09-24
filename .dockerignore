@@ -1,5 +1,12 @@
 .byebug_history
 .cache
+# The environment file holds RAILS_SECRET_KEY, the database password and the
+# administrator password, and Dockerfile's `COPY . .` would otherwise bake all
+# three into an image layer. Docker does not consult .gitignore, so this needs
+# saying explicitly. Verified: without this entry a build context assembled from
+# a bootstrapped checkout reports the file present.
+.env
+.env.*
 .git/*
 .github/*
 .vscode/*
@@ -13,6 +20,11 @@ config/postal/*
 # is where POSTAL_CONFIG_FILE_PATH already points.
 config/postal.yml
 config/signing.key
+# Host side deployment tooling: compose files, bash scripts, and the config and
+# secret directory that deploy/deploy.sh init generates. Nothing in it is read at
+# runtime, and it is exactly where a deployment host keeps its .env and DKIM
+# signing key.
+deploy/*
 doc/*
 # The OpenAPI document is served at runtime by API::V2::SpecController so, unlike
 # the rest of doc/, it must be present in the image.

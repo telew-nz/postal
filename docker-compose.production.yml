@@ -29,6 +29,13 @@
 # machine does not have: there is no TLS, no real DNS for domain verification,
 # and by default no mail delivery. Those are behind the 'mail' profile below.
 #
+# The real deployment is deploy/docker-compose.yml, driven by deploy/deploy.sh
+# and documented in doc/deployment.md. The two are deliberately not shared:
+# this one binds to loopback and runs MariaDB as root, and changing it to suit
+# a deployment would break a verified test suite for no benefit. They are also
+# named differently -- `postal-production` here, `postal` there -- so running
+# both on one host does not make them share containers, networks or volumes.
+#
 # ---------------------------------------------------------------------------
 # Configuration
 #

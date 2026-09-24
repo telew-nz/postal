@@ -1,0 +1,26 @@
+# Diagnostics override: publishes the web process on host loopback.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+#
+# ./deploy.sh up --debug does this for you.
+#
+# The default topology gives the web process no published port at all. Traffic
+# reaches it through cloudflared over the compose network, which means that when
+# something is wrong there are two possible culprits and no way to tell them
+# apart from outside: either the application is broken, or the tunnel is. This
+# override removes that ambiguity by making the origin reachable directly.
+#
+# It is loopback only, so it is not exposed to the network. It is still not free:
+# it bypasses Cloudflare entirely, and therefore bypasses any Access policy you
+# have put in front of the hostname. Anyone with a shell on this host can reach
+# the management API with a valid token and no second factor. Leave it off unless
+# you are diagnosing something, and prefer
+#
+#   ./deploy.sh status   # probes the origin from inside the running container
+#
+# which answers the same question without opening anything.
+
+services:
+  postal:
+    ports:
+      - "127.0.0.1:5000:5000"
