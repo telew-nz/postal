@@ -24,6 +24,8 @@ This document contains all the environment variables which are available for thi
 | `WEB_SERVER_DEFAULT_PORT` | Integer | The default port the web server should listen on unless overriden by the PORT environment variable | 5000 |
 | `WEB_SERVER_DEFAULT_BIND_ADDRESS` | String | The default bind address the web server should listen on unless overriden by the BIND_ADDRESS environment variable | 127.0.0.1 |
 | `WEB_SERVER_MAX_THREADS` | Integer | The maximum number of threads which can be used by the web server | 5 |
+| `API_ENABLED` | Boolean | Enable the JSON management API which allows Postal to be administered over HTTP | true |
+| `API_MAX_PER_PAGE` | Integer | The maximum number of records which the JSON management API will return in a single page | 250 |
 | `WORKER_DEFAULT_HEALTH_SERVER_PORT` | Integer | The default port for the worker health server to listen on | 9090 |
 | `WORKER_DEFAULT_HEALTH_SERVER_BIND_ADDRESS` | String | The default bind address for the worker health server to listen on | 127.0.0.1 |
 | `WORKER_THREADS` | Integer | The number of threads to execute within each worker | 2 |

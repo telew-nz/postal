@@ -51,3 +51,23 @@ Use the commands below to initialize your database and make your first user.
 postal initialize
 postal make-user
 ```
+
+## Testing
+
+Run the unit and request specs with:
+
+```
+bundle exec rspec
+bundle exec rubocop
+```
+
+On a Windows checkout those two commands do not work: there is no MSYS2
+toolchain for the native gem extensions, so the gems cannot be installed locally.
+Use `./script/test/run.ps1` instead, which runs both suites inside the CI image.
+
+The management API under `app/controllers/api/v2` has three further layers of
+testing beyond these, which run against real servers in Docker rather than in
+process: a smoke and OpenAPI contract suite, and a production harness which also
+cross-checks the API against the web UI with a real browser. See
+[doc/api/testing.md](doc/api/testing.md) for what each layer proves and how to run
+them.

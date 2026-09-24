@@ -1,0 +1,5113 @@
+openapi: 3.1.0
+info:
+  title: Postal Management API
+  version: 2.0.0
+  summary: A JSON API for managing a Postal mail server.
+  description: |
+    The Postal management API exposes almost everything that the Postal web
+    interface allows to be managed over plain HTTP and JSON.
+
+    ## Authentication
+
+    Every request (except `GET /api/v2/spec`) must provide an API token in the
+    `X-Postal-API-Key` header. Tokens belong to a user and are created either by
+    an administrator using the `postal:create_api_token` rake task or by an
+    authenticated user through `POST /api/v2/tokens`. The plain text key is
+    shown exactly once, when the token is created, and only a SHA-256 hash of it
+    is stored.
+
+    A token can be revoked at any time with `DELETE /api/v2/tokens/{id}` and may
+    be given an expiry when it is created.
+
+    ## Identifiers
+
+    Organizations and servers are addressed by their `permalink`. Everything
+    else is addressed by its `uuid`. Messages are addressed by their integer
+    `id` within a server's message database.
+
+    ## Envelope
+
+    Successful responses contain the resource under a `data` key. Collection
+    responses also include a `pagination` object. Errors are returned as an
+    `error` object containing a machine readable `code`, a human readable
+    `message` and, where relevant, an array of `details`.
+
+    ## Timestamps
+
+    All timestamps are ISO 8601 strings in UTC.
+
+    ## Out of scope
+
+    This API does not expose the global administrative surface (users, invites,
+    IP pools and IP addresses themselves, worker roles), webhooks or statistics.
+    The message sending API remains at `/api/v1` and is documented separately.
+  contact:
+    name: Postal
+    url: https://github.com/postalserver/postal
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: https://postal.example.com
+    description: |
+      The management API is served by the same process as the Postal web
+      interface. Replace the host with the hostname of your own installation.
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: Meta
+    description: Authentication helpers and the specification itself.
+  - name: Tokens
+    description: API tokens belonging to the authenticated user.
+  - name: Organizations
+    description: Organizations and their membership.
+  - name: Servers
+    description: Mail servers within an organization.
+  - name: Domains
+    description: Sending and receiving domains.
+  - name: Track Domains
+    description: Click and open tracking domains.
+  - name: Credentials
+    description: SMTP and API credentials used to submit mail.
+  - name: Routes
+    description: Incoming mail routing rules.
+  - name: Endpoints
+    description: HTTP, SMTP and address endpoints.
+  - name: IP Pools
+    description: IP pools and IP pool routing rules.
+  - name: Messages
+    description: Messages, deliveries and the suppression list.
+
+components:
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Postal-API-Key
+      description: |
+        A Postal user API token. The plain text value begins with `pst_` and is
+        only ever shown when the token is created.
+
+  parameters:
+
+    Page:
+      name: page
+      in: query
+      description: The page number to return. Pages are numbered from 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+
+    PerPage:
+      name: per_page
+      in: query
+      description: |
+        The number of records to return per page. Values above the
+        `api.max_per_page` configuration option are clamped.
+      schema:
+        type: integer
+        minimum: 1
+        default: 50
+
+    OrganizationPermalink:
+      name: organization_permalink
+      in: path
+      required: true
+      description: The permalink of the organization.
+      schema:
+        type: string
+      example: acme
+
+    ServerPermalink:
+      name: server_permalink
+      in: path
+      required: true
+      description: The permalink of the server within the organization.
+      schema:
+        type: string
+      example: mail
+
+    DomainUUID:
+      name: domain_uuid
+      in: path
+      required: true
+      description: The UUID of the domain.
+      schema:
+        type: string
+        format: uuid
+
+    UUID:
+      name: uuid
+      in: path
+      required: true
+      description: The UUID of the resource.
+      schema:
+        type: string
+        format: uuid
+
+    TokenID:
+      name: id
+      in: path
+      required: true
+      description: The UUID of the API token.
+      schema:
+        type: string
+        format: uuid
+
+    MessageID:
+      name: id
+      in: path
+      required: true
+      description: |
+        The integer ID of the message within the server's message database.
+      schema:
+        type: integer
+
+    AttachmentIndex:
+      name: attachment
+      in: query
+      required: true
+      description: |
+        The zero based position of the attachment in the message's attachment
+        list, as returned by the `attachments` endpoint.
+      schema:
+        type: integer
+        minimum: 0
+
+    SuppressionType:
+      name: suppression_type
+      in: path
+      required: true
+      description: The type of suppression.
+      schema:
+        type: string
+        enum: [recipient]
+
+    SuppressionAddress:
+      name: suppression_address
+      in: path
+      required: true
+      description: The address which is suppressed.
+      schema:
+        type: string
+      example: bounce@example.com
+
+    ConfirmText:
+      name: confirm_text
+      in: query
+      description: |
+        The name of the resource being deleted. Destructive actions are refused
+        unless this matches the current name.
+      schema:
+        type: string
+
+  responses:
+
+    BadRequest:
+      description: A required parameter was missing or malformed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: ParameterMissing
+              message: "param is missing or the value is empty or invalid: name"
+
+    Unauthorized:
+      description: |
+        The request did not provide a valid API token. The `code` will be
+        `MissingAPIKey` when no token was supplied or `InvalidAPIKey` when the
+        token is unknown, expired or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: InvalidAPIKey
+              message: The API token provided was not valid, has expired or has been revoked.
+
+    Forbidden:
+      description: |
+        The authenticated user is not permitted to perform this action. The
+        `code` will be `NotPermitted` for authorization failures or
+        `APIDisabled` when the API is switched off in the configuration.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NotPermitted
+              message: You must be an administrator to perform this action.
+
+    NotFound:
+      description: The requested resource does not exist or is not accessible.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: NotFound
+              message: Couldn't find Organization with 'permalink'='nope'
+
+    UnprocessableEntity:
+      description: |
+        The request was understood but could not be carried out, usually
+        because the provided data failed validation. The `details` array
+        contains one human readable string per error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: ValidationError
+              message: The data provided could not be validated.
+              details:
+                - Name can't be blank
+
+    NoContent:
+      description: The action succeeded and there is no response body.
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: |
+                A machine readable error code. One of `MissingAPIKey`,
+                `InvalidAPIKey`, `NotPermitted`, `APIDisabled`, `NotFound`,
+                `ValidationError`, `ParameterMissing`, `InvalidRequest`,
+                `TimeUndetermined`, `MessageUnavailable`, `AlreadyVerified`,
+                `VerificationFailed`, `InvalidVerificationCode`,
+                `InvalidEmailAddress` or `NotVerified`.
+            message:
+              type: string
+              description: A human readable explanation of the error.
+            details:
+              type: array
+              description: |
+                Individual validation errors. Only present when the error was
+                caused by invalid data.
+              items:
+                type: string
+
+    Pagination:
+      type: object
+      required: [page, per_page, total, total_pages]
+      properties:
+        page:
+          type: integer
+          description: The page number which was returned.
+        per_page:
+          type: integer
+          description: The number of records per page.
+        total:
+          type: integer
+          description: The total number of records matching the query.
+        total_pages:
+          type: integer
+          description: The total number of pages available.
+
+    User:
+      type: object
+      required: [uuid, name, email_address, admin]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email_address:
+          type: string
+          format: email
+        admin:
+          type: boolean
+        time_zone:
+          type:
+            - string
+            - 'null'
+
+    Session:
+      type: object
+      description: |
+        The identity of the user who owns the API token used for the request,
+        together with the organizations which the token can address.
+      required: [user, token, organizations]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        token:
+          type: object
+          required: [uuid, name]
+          properties:
+            uuid:
+              type: string
+              format: uuid
+            name:
+              type: string
+            expires_at:
+              type:
+                - string
+                - 'null'
+              format: date-time
+        organizations:
+          type: array
+          items:
+            type: object
+            required: [permalink, name]
+            properties:
+              permalink:
+                type: string
+              name:
+                type: string
+
+    UserAPIToken:
+      type: object
+      required: [uuid, name, key_prefix, created_at]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        key_prefix:
+          type: string
+          description: |
+            The first eight characters of the plain text key. This exists so
+            that a token can be recognised in a list; it cannot be used to
+            authenticate.
+        key:
+          type: string
+          description: |
+            The plain text API key. This is only ever present in the response
+            to `POST /api/v2/tokens` and cannot be retrieved afterwards.
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        expires_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        revoked_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    Organization:
+      type: object
+      required: [uuid, permalink, name]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        permalink:
+          type: string
+        name:
+          type: string
+        time_zone:
+          type:
+            - string
+            - 'null'
+        ip_pool_id:
+          type:
+            - integer
+            - 'null'
+          description: |
+            The ID of the IP pool which servers in this organization use by
+            default. Valid values come from `GET /api/v2/ip_pools`.
+        owner_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        suspended:
+          type: boolean
+        suspension_reason:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Server:
+      type: object
+      required: [uuid, permalink, name, mode]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        permalink:
+          type: string
+        full_permalink:
+          type: string
+          description: The permalink including the organization prefix.
+        name:
+          type: string
+        mode:
+          type: string
+          enum: [Live, Development]
+        token:
+          type: string
+          description: |
+            The server's API token. This is used with the legacy `/api/v1`
+            endpoints and with the `X-Server-API-Key` header.
+        organization_permalink:
+          type: string
+        ip_pool_id:
+          type:
+            - integer
+            - 'null'
+        suspended:
+          type: boolean
+        suspension_reason:
+          type:
+            - string
+            - 'null'
+        actual_suspension_reason:
+          type:
+            - string
+            - 'null'
+          description: |
+            The suspension reason including any reason inherited from the
+            organization.
+        send_limit:
+          type:
+            - integer
+            - 'null'
+        send_limit_approaching_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        send_limit_exceeded_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        allow_sender:
+          type: boolean
+        privacy_mode:
+          type: boolean
+        log_smtp_data:
+          type: boolean
+        spam_threshold:
+          type:
+            - number
+            - 'null'
+        spam_failure_threshold:
+          type:
+            - number
+            - 'null'
+        outbound_spam_threshold:
+          type:
+            - number
+            - 'null'
+        postmaster_address:
+          type:
+            - string
+            - 'null'
+        message_retention_days:
+          type:
+            - integer
+            - 'null'
+        raw_message_retention_days:
+          type:
+            - integer
+            - 'null'
+        raw_message_retention_size:
+          type:
+            - integer
+            - 'null'
+        domains_not_to_click_track:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Domain:
+      type: object
+      description: |
+        The DKIM private key for a domain is never returned by any endpoint.
+      required: [id, uuid, name]
+      properties:
+        id:
+          type: integer
+          description: |
+            The integer ID of the domain. Creating a route and creating a track
+            domain both identify their parent domain with this rather than with
+            the UUID, so it is exposed here to make those operations possible.
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        owner_type:
+          type: string
+          enum: [Organization, Server]
+        owner_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        server_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        outgoing:
+          type: boolean
+        incoming:
+          type: boolean
+        use_for_any:
+          type:
+            - boolean
+            - 'null'
+          description: |
+            Whether the domain can be used to send mail from any address. The
+            column has no default so this is null until it has been set.
+        verified:
+          type: boolean
+        verification_method:
+          type:
+            - string
+            - 'null'
+          enum: [DNS, Email, null]
+        verification_token:
+          type:
+            - string
+            - 'null'
+        verified_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        dns_checked:
+          type: boolean
+        dns_ok:
+          type: boolean
+        dns_checked_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        dkim_identifier_string:
+          type:
+            - string
+            - 'null'
+        spf_status:
+          type:
+            - string
+            - 'null'
+        spf_error:
+          type:
+            - string
+            - 'null'
+        dkim_status:
+          type:
+            - string
+            - 'null'
+        dkim_error:
+          type:
+            - string
+            - 'null'
+        mx_status:
+          type:
+            - string
+            - 'null'
+        mx_error:
+          type:
+            - string
+            - 'null'
+        return_path_status:
+          type:
+            - string
+            - 'null'
+        return_path_error:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DNSRecord:
+      type: object
+      description: A DNS record which must exist for a domain to work correctly.
+      required: [type, name, value]
+      properties:
+        type:
+          type: string
+          enum: [TXT, CNAME, MX]
+        name:
+          type: string
+          description: The record name, relative to the domain.
+        host:
+          type:
+            - string
+            - 'null'
+          description: The target host for CNAME records.
+        value:
+          type:
+            - string
+            - 'null'
+          description: The record value for TXT records.
+        priority:
+          type:
+            - integer
+            - 'null'
+          description: The MX priority. Only present on MX records.
+        status:
+          type:
+            - string
+            - 'null'
+        error:
+          type:
+            - string
+            - 'null'
+        required:
+          type: boolean
+        notes:
+          type:
+            - string
+            - 'null'
+
+    TrackDomain:
+      type: object
+      required: [uuid, name]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        full_name:
+          type: string
+          description: The tracking hostname including the parent domain.
+        domain_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        server_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        ssl_enabled:
+          type: boolean
+        track_clicks:
+          type: boolean
+        track_loads:
+          type: boolean
+        excluded_click_domains:
+          type: array
+          items:
+            type: string
+        dns_status:
+          type:
+            - string
+            - 'null'
+        dns_error:
+          type:
+            - string
+            - 'null'
+        dns_ok:
+          type: boolean
+        dns_checked_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Credential:
+      type: object
+      description: |
+        The `key` is omitted from collection responses so that listing
+        credentials cannot be used to harvest the keys for a server. It is
+        present on `GET`, `POST` and `PATCH` of a single credential.
+      required: [uuid, name, type]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [API, SMTP, SMTP-IP]
+        key:
+          type:
+            - string
+            - 'null'
+        hold:
+          type: boolean
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        usage_type:
+          type: string
+          description: |
+            Derived from `last_used_at`: `Unused` when the credential has never
+            been used, otherwise `Active`, `Quiet`, `Dormant` or `Inactive`
+            depending on how long ago it was last used.
+          enum: [Active, Quiet, Dormant, Inactive, Unused]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Route:
+      type: object
+      required: [uuid, name]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type:
+            - string
+            - 'null'
+        wildcard:
+          type: boolean
+        return_path:
+          type: boolean
+        domain_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        spam_mode:
+          type:
+            - string
+            - 'null'
+          enum: [Mark, Quarantine, Fail, null]
+        mode:
+          type:
+            - string
+            - 'null'
+          description: |
+            The delivery mode when the route does not target an endpoint. One of
+            `Accept`, `Hold`, `Bounce` or `Reject`.
+        token:
+          type: string
+        endpoint:
+          type:
+            - string
+            - 'null'
+          description: |
+            The route target in the form `HTTPEndpoint#<uuid>`,
+            `SMTPEndpoint#<uuid>` or `AddressEndpoint#<uuid>`. For routes which
+            do not target an endpoint this is the mode instead.
+        additional_endpoints:
+          type: array
+          description: Further endpoints which the route delivers to.
+          items:
+            type: string
+        forward_address:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HTTPEndpoint:
+      type: object
+      required: [uuid, name, url]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        encoding:
+          type: string
+          enum: [BodyAsJSON, FormData]
+        format:
+          type: string
+          enum: [Hash, RawMessage]
+        strip_replies:
+          type: boolean
+        include_attachments:
+          type: boolean
+        timeout:
+          type: integer
+          description: The request timeout in seconds.
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        disabled_until:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        error:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SMTPEndpoint:
+      type: object
+      required: [uuid, name, hostname]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        hostname:
+          type: string
+        port:
+          type:
+            - integer
+            - 'null'
+        ssl_mode:
+          type:
+            - string
+            - 'null'
+          enum: [None, Auto, STARTTLS, TLS, null]
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        disabled_until:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        error:
+          type:
+            - string
+            - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AddressEndpoint:
+      type: object
+      required: [uuid, address]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        address:
+          type: string
+          format: email
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    IPPool:
+      type: object
+      description: |
+        IP pools are read only. They are exposed because servers and IP pool
+        rules both reference a pool by its integer ID.
+      required: [id, uuid, name]
+      properties:
+        id:
+          type: integer
+          description: |
+            The integer ID to send as `ip_pool_id` when creating or updating a
+            server or when creating an IP pool rule.
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        default:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    IPPoolRule:
+      type: object
+      required: [uuid, from_text, to_text]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        owner_type:
+          type: string
+          enum: [Organization, Server]
+        owner_uuid:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        ip_pool_id:
+          type: integer
+        ip_pool_name:
+          type:
+            - string
+            - 'null'
+        from_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            A newline separated list of addresses or domains which are matched
+            against the sender of a message. Null when the rule only matches on
+            recipients.
+        to_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            A newline separated list of addresses or domains which are matched
+            against the recipient of a message. Null when the rule only matches
+            on senders.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    QueuedMessage:
+      type: object
+      required: [id, message_id]
+      properties:
+        id:
+          type: integer
+        message_id:
+          type: integer
+        domain:
+          type:
+            - string
+            - 'null'
+        attempts:
+          type: integer
+        retry_after:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        locked:
+          type: boolean
+        locked_by:
+          type:
+            - string
+            - 'null'
+        locked_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        manual:
+          type: boolean
+        batch_key:
+          type:
+            - string
+            - 'null'
+        ip_address:
+          type:
+            - object
+            - 'null'
+          required: [ipv4, ipv6, hostname]
+          properties:
+            ipv4:
+              type:
+                - string
+                - 'null'
+            ipv6:
+              type:
+                - string
+                - 'null'
+            hostname:
+              type:
+                - string
+                - 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Message:
+      type: object
+      description: |
+        Messages live in a per-server message database rather than in the main
+        database. The `headers`, `plain_body`, `html_body` and `attachments`
+        properties are only present when a single message is fetched.
+      required: [id, scope, status]
+      properties:
+        id:
+          type: integer
+        token:
+          type: string
+        scope:
+          type: string
+          enum: [outgoing, incoming]
+        rcpt_to:
+          type: string
+        mail_from:
+          type: string
+        subject:
+          type:
+            - string
+            - 'null'
+        message_id:
+          type:
+            - string
+            - 'null'
+        route_id:
+          type:
+            - integer
+            - 'null'
+        domain_id:
+          type:
+            - integer
+            - 'null'
+        credential_id:
+          type:
+            - integer
+            - 'null'
+        endpoint_type:
+          type:
+            - string
+            - 'null'
+        endpoint_id:
+          type:
+            - integer
+            - 'null'
+        status:
+          type: string
+        held:
+          type: boolean
+        hold_expiry:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        size:
+          type:
+            - integer
+            - 'null'
+        inspected:
+          type: boolean
+        spam:
+          type: boolean
+        spam_score:
+          type:
+            - number
+            - 'null'
+        spam_status:
+          type:
+            - string
+            - 'null'
+        threat:
+          type: boolean
+        threat_details:
+          type:
+            - string
+            - 'null'
+        bounce:
+          type: boolean
+        bounce_for_id:
+          type:
+            - integer
+            - 'null'
+        tag:
+          type:
+            - string
+            - 'null'
+        loaded:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        clicked:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        read:
+          type: boolean
+        received_with_ssl:
+          type: boolean
+        parsed:
+          type: boolean
+        tracked_links:
+          type:
+            - integer
+            - 'null'
+        tracked_images:
+          type:
+            - integer
+            - 'null'
+        timestamp:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        last_delivery_attempt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        raw_table:
+          type:
+            - string
+            - 'null'
+        raw_body_id:
+          type:
+            - integer
+            - 'null'
+        raw_headers_id:
+          type:
+            - integer
+            - 'null'
+        raw_message:
+          type: boolean
+          description: Whether the raw RFC822 message is still stored.
+        headers:
+          type:
+            - object
+            - 'null'
+          description: |
+            The parsed headers of the raw message, keyed by the lower cased
+            header name. Each value is a list because a header may legitimately
+            appear more than once, for example `Received`. Only present when a
+            single message has been requested.
+          additionalProperties:
+            type: array
+            items:
+              type: string
+        plain_body:
+          type:
+            - string
+            - 'null'
+        html_body:
+          type:
+            - string
+            - 'null'
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Attachment'
+
+    Attachment:
+      type: object
+      required: [filename]
+      properties:
+        filename:
+          type:
+            - string
+            - 'null'
+        content_type:
+          type:
+            - string
+            - 'null'
+        size:
+          type: integer
+          description: The size of the decoded attachment body in bytes.
+
+    Delivery:
+      type: object
+      required: [id, message_id, status]
+      properties:
+        id:
+          type: integer
+        message_id:
+          type: integer
+        status:
+          type: string
+        code:
+          type:
+            - integer
+            - 'null'
+          description: The SMTP reply code.
+        details:
+          type:
+            - string
+            - 'null'
+        output:
+          type:
+            - string
+            - 'null'
+          description: The SMTP conversation. May be large.
+        sent_with_ssl:
+          type: boolean
+        log_id:
+          type:
+            - string
+            - 'null'
+        time:
+          type:
+            - number
+            - 'null'
+          description: The delivery duration in seconds.
+        timestamp:
+          type:
+            - string
+            - 'null'
+          format: date-time
+
+    SpamCheck:
+      type: object
+      required: [id, code]
+      properties:
+        id:
+          type: integer
+        message_id:
+          type: integer
+        code:
+          type: string
+        score:
+          type:
+            - number
+            - 'null'
+        description:
+          type:
+            - string
+            - 'null'
+
+    ActivityEntry:
+      type: object
+      description: |
+        A delivery, click or load event. The properties which are present
+        depend on the value of `type`.
+      required: [type, timestamp]
+      properties:
+        type:
+          type: string
+          enum: [Delivery, Click, Load]
+        timestamp:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        status:
+          type:
+            - string
+            - 'null'
+        code:
+          type:
+            - integer
+            - 'null'
+        details:
+          type:
+            - string
+            - 'null'
+        output:
+          type:
+            - string
+            - 'null'
+        sent_with_ssl:
+          type:
+            - boolean
+            - 'null'
+        log_id:
+          type:
+            - string
+            - 'null'
+        time:
+          type:
+            - number
+            - 'null'
+        url:
+          type:
+            - string
+            - 'null'
+        ip_address:
+          type:
+            - string
+            - 'null'
+        user_agent:
+          type:
+            - string
+            - 'null'
+
+    Suppression:
+      type: object
+      required: [id, type, address]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+          enum: [recipient]
+        address:
+          type: string
+        reason:
+          type:
+            - string
+            - 'null'
+        timestamp:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        keep_until:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        expired:
+          type: boolean
+
+    TrackDomainInput:
+      type: object
+      description: The properties accepted when creating a track domain.
+      required: [name, domain_id]
+      properties:
+        name:
+          type: string
+          description: |
+            The tracking hostname, for example `track`. The parent domain is
+            appended to form the full hostname.
+          example: track
+        domain_id:
+          type: integer
+          description: |
+            The integer ID of the parent domain. This is not the domain's UUID.
+        track_loads:
+          type: boolean
+          default: true
+        track_clicks:
+          type: boolean
+          default: true
+        excluded_click_domains:
+          type: string
+          description: A newline separated list of domains not to click track.
+        ssl_enabled:
+          type: boolean
+          default: true
+
+    TrackDomainUpdateInput:
+      type: object
+      description: |
+        The properties accepted when updating a track domain. The `name` and
+        `domain_id` cannot be changed after creation.
+      properties:
+        track_loads:
+          type: boolean
+        track_clicks:
+          type: boolean
+        excluded_click_domains:
+          type: string
+        ssl_enabled:
+          type: boolean
+
+    CredentialInput:
+      type: object
+      description: The properties accepted when creating a credential.
+      required: [type, name]
+      properties:
+        type:
+          type: string
+          enum: [API, SMTP, SMTP-IP]
+        name:
+          type: string
+          example: Default
+        key:
+          type: string
+          description: |
+            Only honoured for `SMTP-IP` credentials. For every other type a key
+            is generated automatically.
+        hold:
+          type: boolean
+          description: Whether mail submitted with this credential is held.
+
+    CredentialUpdateInput:
+      type: object
+      description: |
+        The properties accepted when updating a credential. The `type` cannot be
+        changed and the `key` can only be changed on `SMTP-IP` credentials.
+      properties:
+        name:
+          type: string
+        key:
+          type: string
+        hold:
+          type: boolean
+
+    RouteInput:
+      type: object
+      description: The properties accepted when creating a route.
+      required: [name, spam_mode]
+      properties:
+        name:
+          type: string
+          description: |
+            The address to match, for example `john@example.com` or `*@example.com`.
+            The special name `__returnpath__` creates the return path route.
+        domain_id:
+          type: integer
+          description: |
+            The integer ID of the domain this route belongs to, as returned by
+            the domain endpoints. Required for every route except the return
+            path route.
+        spam_mode:
+          type: string
+          enum: [Mark, Quarantine, Fail]
+          description: |
+            What to do with messages which are judged to be spam. Required; there
+            is no default.
+        _endpoint:
+          type: string
+          description: |
+            The route target in the form `HTTPEndpoint#<uuid>`,
+            `SMTPEndpoint#<uuid>` or `AddressEndpoint#<uuid>`, or one of the
+            modes `Accept`, `Hold`, `Bounce` or `Reject`. Required when creating
+            a route unless `endpoint_type` and `endpoint_uuid` are given instead.
+        endpoint_type:
+          type: string
+          enum: [HTTPEndpoint, SMTPEndpoint, AddressEndpoint]
+          description: Used with `endpoint_uuid` as an alternative to `_endpoint`.
+        endpoint_uuid:
+          type: string
+          format: uuid
+          description: Used with `endpoint_type` as an alternative to `_endpoint`.
+        additional_route_endpoints_array:
+          type: array
+          description: |
+            Further endpoints to deliver to, in `_endpoint` form. Only valid for
+            a route whose target is an endpoint.
+          items:
+            type: string
+
+    RouteUpdateInput:
+      type: object
+      description: |
+        The properties accepted when updating a route. Only the properties which
+        are sent are changed, so a route's existing domain, spam mode and target
+        are left alone when they are omitted.
+      properties:
+        name:
+          type: string
+        domain_id:
+          type: integer
+        spam_mode:
+          type: string
+          enum: [Mark, Quarantine, Fail]
+        _endpoint:
+          type: string
+        endpoint_type:
+          type: string
+          enum: [HTTPEndpoint, SMTPEndpoint, AddressEndpoint]
+        endpoint_uuid:
+          type: string
+          format: uuid
+        additional_route_endpoints_array:
+          type: array
+          items:
+            type: string
+
+    HTTPEndpointInput:
+      type: object
+      description: The properties accepted when creating an HTTP endpoint.
+      required: [name, url, encoding, format]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        encoding:
+          type: string
+          enum: [BodyAsJSON, FormData]
+          description: Required; there is no default.
+        format:
+          type: string
+          enum: [Hash, RawMessage]
+          description: Required; there is no default.
+        strip_replies:
+          type: boolean
+          default: false
+        include_attachments:
+          type: boolean
+          default: true
+        timeout:
+          type: integer
+          minimum: 5
+          maximum: 60
+          default: 5
+
+    HTTPEndpointUpdateInput:
+      type: object
+      description: The properties accepted when updating an HTTP endpoint.
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        encoding:
+          type: string
+          enum: [BodyAsJSON, FormData]
+        format:
+          type: string
+          enum: [Hash, RawMessage]
+        strip_replies:
+          type: boolean
+        include_attachments:
+          type: boolean
+        timeout:
+          type: integer
+          minimum: 5
+          maximum: 60
+
+    SMTPEndpointInput:
+      type: object
+      description: The properties accepted when creating an SMTP endpoint.
+      required: [name, hostname, ssl_mode]
+      properties:
+        name:
+          type: string
+        hostname:
+          type: string
+          pattern: '^[a-z0-9.-]*$'
+        port:
+          type: integer
+          description: |
+            Optional. There is no default; when omitted the port is null and
+            the standard port for the SSL mode is used when delivering.
+        ssl_mode:
+          type: string
+          enum: [None, Auto, STARTTLS, TLS]
+          description: Required; there is no default.
+
+    SMTPEndpointUpdateInput:
+      type: object
+      description: The properties accepted when updating an SMTP endpoint.
+      properties:
+        name:
+          type: string
+        hostname:
+          type: string
+          pattern: '^[a-z0-9.-]*$'
+        port:
+          type: integer
+        ssl_mode:
+          type: string
+          enum: [None, Auto, STARTTLS, TLS]
+
+    AddressEndpointInput:
+      type: object
+      description: The properties accepted when creating an address endpoint.
+      required: [address]
+      properties:
+        address:
+          type: string
+          format: email
+
+    IPPoolRuleInput:
+      type: object
+      description: The properties accepted when creating an IP pool rule.
+      required: [ip_pool_id]
+      properties:
+        from_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            A newline separated list of addresses or domains which are matched
+            against the sender of a message. At least one of `from_text` and
+            `to_text` must be given.
+          example: example.com
+        to_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            A newline separated list of addresses or domains which are matched
+            against the recipient of a message. At least one of `from_text` and
+            `to_text` must be given.
+          example: user@example.com
+        ip_pool_id:
+          type: integer
+          description: |
+            The integer ID of the pool to route matching messages through, as
+            returned by `GET /api/v2/ip_pools`. The pool must belong to the
+            organization which the rule's owner belongs to.
+
+    IPPoolRuleUpdateInput:
+      type: object
+      description: The properties accepted when updating an IP pool rule.
+      properties:
+        from_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            Omit to leave the existing value alone. Send null to clear the
+            sender conditions, which is only accepted while `to_text` still has
+            at least one.
+        to_text:
+          type:
+            - string
+            - 'null'
+          description: |
+            Omit to leave the existing value alone. Send null to clear the
+            recipient conditions, which is only accepted while `from_text` still
+            has at least one.
+        ip_pool_id:
+          type: integer
+
+paths:
+
+  /api/v2/spec:
+    get:
+      tags: [Meta]
+      operationId: getSpec
+      summary: Fetch this OpenAPI specification
+      description: |
+        Returns this document. This is the only endpoint which does not require
+        authentication so that clients can discover the shape of the API before
+        they have a token. By default the document is returned as JSON; send
+        `?format=yaml` or an `Accept` header containing `yaml` to receive the
+        source document instead.
+      security: []
+      parameters:
+        - name: format
+          in: query
+          description: The serialization to return.
+          schema:
+            type: string
+            enum: [json, yaml]
+      responses:
+        '200':
+          description: The specification document.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: The parsed OpenAPI document.
+            application/yaml:
+              schema:
+                type: string
+                description: The raw YAML source of the OpenAPI document.
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/me:
+    get:
+      tags: [Meta]
+      operationId: getSession
+      summary: Show the authenticated user
+      description: |
+        Returns the user who owns the API token used for the request along with
+        the organizations which the token can address. This is the quickest way
+        to check that a token is valid.
+      responses:
+        '200':
+          description: The session details.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v2/tokens:
+    get:
+      tags: [Tokens]
+      operationId: listTokens
+      summary: List the authenticated user's API tokens
+      description: |
+        Tokens belonging to other users are never returned. The plain text key is
+        never included in this response.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of API tokens.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserAPIToken'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Tokens]
+      operationId: createToken
+      summary: Create an API token
+      description: |
+        Creates a new token belonging to the authenticated user. The response is
+        the only time the plain text `key` is ever returned; store it
+        immediately because only a hash of it is kept.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: A label for the token.
+                  example: CI Deployment
+                expires_at:
+                  type: string
+                  format: date-time
+                  description: |
+                    When the token should stop working. Omit for a token which
+                    does not expire.
+      responses:
+        '201':
+          description: The created token, including its plain text key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserAPIToken'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/tokens/{id}:
+    delete:
+      tags: [Tokens]
+      operationId: revokeToken
+      summary: Revoke an API token
+      description: |
+        Marks the token as revoked. It cannot be used to authenticate
+        afterwards. Tokens belonging to other users return `404`.
+      parameters:
+        - $ref: '#/components/parameters/TokenID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/ip_pools:
+    get:
+      tags: [IP Pools]
+      operationId: listIPPools
+      summary: List IP pools
+      description: |
+        IP pools are read only. They are exposed because creating or updating a
+        server and creating an IP pool rule both require a valid `ip_pool_id`
+        and there is otherwise no way to discover one.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of IP pools.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IPPool'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v2/organizations:
+    get:
+      tags: [Organizations]
+      operationId: listOrganizations
+      summary: List organizations
+      description: |
+        Returns only the organizations which the authenticated user can access.
+        Administrators see every organization.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of organizations.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Organization'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Organizations]
+      operationId: createOrganization
+      summary: Create an organization
+      description: |
+        Creates a new organization owned by the authenticated user. This action
+        requires the user to be an administrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: Acme Inc
+                permalink:
+                  type: string
+                  description: |
+                    A URL friendly identifier. Generated from the name when it
+                    is not provided.
+                  example: acme
+      responses:
+        '201':
+          description: The created organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}:
+    get:
+      tags: [Organizations]
+      operationId: showOrganization
+      summary: Show an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+      responses:
+        '200':
+          description: The organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Organization'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Organizations]
+      operationId: updateOrganization
+      summary: Update an organization
+      description: Available to any member of the organization.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                time_zone:
+                  type: string
+                  description: |
+                    A Rails time zone name. This only affects the web interface;
+                    the API always returns UTC.
+                  example: Europe/London
+      responses:
+        '200':
+          description: The updated organization.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Organization'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Organizations]
+      operationId: deleteOrganization
+      summary: Delete an organization
+      description: |
+        Soft deletes the organization and everything it contains. This action
+        requires the user to be an administrator and requires `confirm_text` to
+        match the organization's name.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ConfirmText'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/domains:
+    get:
+      tags: [Domains]
+      operationId: listOrganizationDomains
+      summary: List domains owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of domains.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Domain'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Domains]
+      operationId: createOrganizationDomain
+      summary: Create a domain owned by an organization
+      description: |
+        Domains created by an administrator are verified immediately using the
+        DNS verification method. Other users must complete verification using
+        the `verify` action.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: example.com
+                verification_method:
+                  type: string
+                  enum: [DNS, Email]
+                  default: DNS
+      responses:
+        '201':
+          description: The created domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}:
+    get:
+      tags: [Domains]
+      operationId: showOrganizationDomain
+      summary: Show a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Domains]
+      operationId: deleteOrganizationDomain
+      summary: Delete a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/verify:
+    post:
+      tags: [Domains]
+      operationId: verifyOrganizationDomain
+      summary: Verify a domain owned by an organization
+      description: |
+        For domains using DNS verification no body is needed and the DNS records
+        are checked immediately. For domains using e-mail verification either
+        provide `code` to complete verification with a code received by e-mail,
+        or provide `email_address` to have a verification e-mail dispatched.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code:
+                  type: string
+                  description: The verification code from the e-mail.
+                email_address:
+                  type: string
+                  format: email
+                  description: |
+                    An address which is permitted to verify the domain. The
+                    valid addresses are listed in the `422` response returned
+                    when an invalid address is given.
+      responses:
+        '200':
+          description: The domain has been verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '202':
+          description: |
+            A verification e-mail has been dispatched. The body contains the
+            address it was sent to.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [sent_to]
+                    properties:
+                      sent_to:
+                        type: string
+                        format: email
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: |
+            Verification failed. The `code` will be `AlreadyVerified`,
+            `VerificationFailed`, `InvalidVerificationCode` or
+            `InvalidEmailAddress`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/check:
+    post:
+      tags: [Domains]
+      operationId: checkOrganizationDomain
+      summary: Check the DNS records for a domain owned by an organization
+      description: |
+        Performs a live DNS check and persists the results. The response
+        contains both a boolean `ok` summary and the refreshed domain.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The result of the DNS check.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [ok, domain]
+                    properties:
+                      ok:
+                        type: boolean
+                      domain:
+                        $ref: '#/components/schemas/Domain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/dns_records:
+    get:
+      tags: [Domains]
+      operationId: organizationDomainDNSRecords
+      summary: List the DNS records required by a domain owned by an organization
+      description: |
+        Returns the records which must be created for the domain to send and
+        receive mail. The domain must already be verified.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The DNS records for the domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [domain, records]
+                    properties:
+                      domain:
+                        $ref: '#/components/schemas/Domain'
+                      records:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DNSRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: The domain has not been verified yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: NotVerified
+                  message: This domain has not been verified yet.
+
+  /api/v2/organizations/{organization_permalink}/ip_pool_rules:
+    get:
+      tags: [IP Pools]
+      operationId: listOrganizationIPPoolRules
+      summary: List IP pool rules for an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of IP pool rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IPPoolRule'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [IP Pools]
+      operationId: createOrganizationIPPoolRule
+      summary: Create an IP pool rule for an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleInput'
+      responses:
+        '201':
+          description: The created IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/ip_pool_rules/{uuid}:
+    get:
+      tags: [IP Pools]
+      operationId: showOrganizationIPPoolRule
+      summary: Show an IP pool rule for an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [IP Pools]
+      operationId: updateOrganizationIPPoolRule
+      summary: Update an IP pool rule for an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleUpdateInput'
+      responses:
+        '200':
+          description: The updated IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [IP Pools]
+      operationId: replaceOrganizationIPPoolRule
+      summary: Update an IP pool rule for an organization
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleUpdateInput'
+      responses:
+        '200':
+          description: The updated IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [IP Pools]
+      operationId: deleteOrganizationIPPoolRule
+      summary: Delete an IP pool rule for an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+
+  /api/v2/organizations/{organization_permalink}/servers:
+    get:
+      tags: [Servers]
+      operationId: listServers
+      summary: List servers in an organization
+      description: Deleted servers are not returned.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of servers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Server'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Servers]
+      operationId: createServer
+      summary: Create a server in an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: Mail Server
+                mode:
+                  type: string
+                  enum: [Live, Development]
+                  default: Live
+                ip_pool_id:
+                  type: integer
+                  description: |
+                    The IP pool to use. Omit to inherit the organization's pool.
+      responses:
+        '201':
+          description: The created server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}:
+    get:
+      tags: [Servers]
+      operationId: showServer
+      summary: Show a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      responses:
+        '200':
+          description: The server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Servers]
+      operationId: updateServer
+      summary: Update a server
+      description: |
+        This single operation replaces the separate limits, retention, spam and
+        advanced forms in the web interface. The `send_limit`, `allow_sender`,
+        `privacy_mode`, `log_smtp_data`, `outbound_spam_threshold`,
+        `message_retention_days`, `raw_message_retention_days` and
+        `raw_message_retention_size` properties may only be set by an
+        administrator; they are silently ignored for other users.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [Live, Development]
+                ip_pool_id:
+                  type: integer
+                spam_threshold:
+                  type: number
+                spam_failure_threshold:
+                  type: number
+                postmaster_address:
+                  type: string
+                send_limit:
+                  type: integer
+                  description: Administrators only.
+                allow_sender:
+                  type: boolean
+                  description: Administrators only.
+                privacy_mode:
+                  type: boolean
+                  description: Administrators only.
+                log_smtp_data:
+                  type: boolean
+                  description: Administrators only.
+                outbound_spam_threshold:
+                  type: number
+                  description: Administrators only.
+                message_retention_days:
+                  type: integer
+                  description: Administrators only.
+                raw_message_retention_days:
+                  type: integer
+                  description: Administrators only.
+                raw_message_retention_size:
+                  type: integer
+                  description: Administrators only.
+      responses:
+        '200':
+          description: The updated server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Servers]
+      operationId: replaceServer
+      summary: Update a server
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                mode:
+                  type: string
+                  enum: [Live, Development]
+                ip_pool_id:
+                  type: integer
+      responses:
+        '200':
+          description: The updated server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Servers]
+      operationId: deleteServer
+      summary: Delete a server
+      description: |
+        Soft deletes the server, its message database and everything it
+        contains. Requires `confirm_text` to match the server's name.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/ConfirmText'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/suspend:
+    post:
+      tags: [Servers]
+      operationId: suspendServer
+      summary: Suspend a server
+      description: Requires the authenticated user to be an administrator.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: The reason for the suspension.
+                  example: Exceeded fair use policy
+      responses:
+        '200':
+          description: The suspended server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/unsuspend:
+    post:
+      tags: [Servers]
+      operationId: unsuspendServer
+      summary: Unsuspend a server
+      description: Requires the authenticated user to be an administrator.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      responses:
+        '200':
+          description: The unsuspended server.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Server'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/queue:
+    get:
+      tags: [Servers]
+      operationId: listServerQueue
+      summary: List the messages queued for delivery
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of queued messages, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/QueuedMessage'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains:
+    get:
+      tags: [Domains]
+      operationId: listServerDomains
+      summary: List domains assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of domains.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Domain'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Domains]
+      operationId: createServerDomain
+      summary: Create a domain assigned to a server
+      description: |
+        Domains created by an administrator are verified immediately using the
+        DNS verification method.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: example.com
+                verification_method:
+                  type: string
+                  enum: [DNS, Email]
+                  default: DNS
+      responses:
+        '201':
+          description: The created domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}:
+    get:
+      tags: [Domains]
+      operationId: showServerDomain
+      summary: Show a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Domains]
+      operationId: deleteServerDomain
+      summary: Delete a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/verify:
+    post:
+      tags: [Domains]
+      operationId: verifyServerDomain
+      summary: Verify a domain assigned to a server
+      description: See the organization scoped equivalent for full details.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code:
+                  type: string
+                email_address:
+                  type: string
+                  format: email
+      responses:
+        '200':
+          description: The domain has been verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Domain'
+        '202':
+          description: A verification e-mail has been dispatched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [sent_to]
+                    properties:
+                      sent_to:
+                        type: string
+                        format: email
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/check:
+    post:
+      tags: [Domains]
+      operationId: checkServerDomain
+      summary: Check the DNS records for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The result of the DNS check.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [ok, domain]
+                    properties:
+                      ok:
+                        type: boolean
+                      domain:
+                        $ref: '#/components/schemas/Domain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/dns_records:
+    get:
+      tags: [Domains]
+      operationId: serverDomainDNSRecords
+      summary: List the DNS records required by a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: The DNS records for the domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [domain, records]
+                    properties:
+                      domain:
+                        $ref: '#/components/schemas/Domain'
+                      records:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DNSRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/track_domains:
+    get:
+      tags: [Track Domains]
+      operationId: listTrackDomains
+      summary: List track domains for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of track domains.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TrackDomain'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Track Domains]
+      operationId: createTrackDomain
+      summary: Create a track domain for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackDomainInput'
+      responses:
+        '201':
+          description: The created track domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TrackDomain'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/track_domains/{uuid}:
+    get:
+      tags: [Track Domains]
+      operationId: showTrackDomain
+      summary: Show a track domain
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The track domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TrackDomain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Track Domains]
+      operationId: updateTrackDomain
+      summary: Update a track domain
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackDomainUpdateInput'
+      responses:
+        '200':
+          description: The updated track domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TrackDomain'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Track Domains]
+      operationId: replaceTrackDomain
+      summary: Update a track domain
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackDomainUpdateInput'
+      responses:
+        '200':
+          description: The updated track domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TrackDomain'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Track Domains]
+      operationId: deleteTrackDomain
+      summary: Delete a track domain
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/track_domains/{uuid}/toggle_ssl:
+    post:
+      tags: [Track Domains]
+      operationId: toggleTrackDomainSSL
+      summary: Toggle SSL for a track domain
+      description: Flips the `ssl_enabled` property and returns the record.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The updated track domain.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/TrackDomain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/track_domains/{uuid}/check:
+    post:
+      tags: [Track Domains]
+      operationId: checkTrackDomain
+      summary: Check the DNS records for a track domain
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The result of the DNS check.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [ok, track_domain]
+                    properties:
+                      ok:
+                        type: boolean
+                      track_domain:
+                        $ref: '#/components/schemas/TrackDomain'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/credentials:
+    get:
+      tags: [Credentials]
+      operationId: listCredentials
+      summary: List credentials for a server
+      description: The `key` is redacted from every credential in this response.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Credential'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Credentials]
+      operationId: createCredential
+      summary: Create a credential for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialInput'
+      responses:
+        '201':
+          description: The created credential, including its key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Credential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/credentials/{uuid}:
+    get:
+      tags: [Credentials]
+      operationId: showCredential
+      summary: Show a credential
+      description: The `key` is included in this response.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The credential.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Credential'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Credentials]
+      operationId: updateCredential
+      summary: Update a credential
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialUpdateInput'
+      responses:
+        '200':
+          description: The updated credential, including its key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Credential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Credentials]
+      operationId: replaceCredential
+      summary: Update a credential
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CredentialUpdateInput'
+      responses:
+        '200':
+          description: The updated credential, including its key.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Credential'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Credentials]
+      operationId: deleteCredential
+      summary: Delete a credential
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/routes:
+    get:
+      tags: [Routes]
+      operationId: listRoutes
+      summary: List routes for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of routes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Route'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Routes]
+      operationId: createRoute
+      summary: Create a route for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteInput'
+      responses:
+        '201':
+          description: The created route.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Route'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/routes/{uuid}:
+    get:
+      tags: [Routes]
+      operationId: showRoute
+      summary: Show a route
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The route.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Route'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Routes]
+      operationId: updateRoute
+      summary: Update a route
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteUpdateInput'
+      responses:
+        '200':
+          description: The updated route.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Route'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Routes]
+      operationId: replaceRoute
+      summary: Update a route
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RouteUpdateInput'
+      responses:
+        '200':
+          description: The updated route.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Route'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Routes]
+      operationId: deleteRoute
+      summary: Delete a route
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/http_endpoints:
+    get:
+      tags: [Endpoints]
+      operationId: listHTTPEndpoints
+      summary: List HTTP endpoints for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of HTTP endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/HTTPEndpoint'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Endpoints]
+      operationId: createHTTPEndpoint
+      summary: Create an HTTP endpoint for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HTTPEndpointInput'
+      responses:
+        '201':
+          description: The created HTTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/HTTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/http_endpoints/{uuid}:
+    get:
+      tags: [Endpoints]
+      operationId: showHTTPEndpoint
+      summary: Show an HTTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The HTTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/HTTPEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Endpoints]
+      operationId: updateHTTPEndpoint
+      summary: Update an HTTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HTTPEndpointUpdateInput'
+      responses:
+        '200':
+          description: The updated HTTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/HTTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Endpoints]
+      operationId: replaceHTTPEndpoint
+      summary: Update an HTTP endpoint
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HTTPEndpointUpdateInput'
+      responses:
+        '200':
+          description: The updated HTTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/HTTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Endpoints]
+      operationId: deleteHTTPEndpoint
+      summary: Delete an HTTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/smtp_endpoints:
+    get:
+      tags: [Endpoints]
+      operationId: listSMTPEndpoints
+      summary: List SMTP endpoints for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of SMTP endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SMTPEndpoint'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Endpoints]
+      operationId: createSMTPEndpoint
+      summary: Create an SMTP endpoint for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SMTPEndpointInput'
+      responses:
+        '201':
+          description: The created SMTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SMTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/smtp_endpoints/{uuid}:
+    get:
+      tags: [Endpoints]
+      operationId: showSMTPEndpoint
+      summary: Show an SMTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The SMTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SMTPEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Endpoints]
+      operationId: updateSMTPEndpoint
+      summary: Update an SMTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SMTPEndpointUpdateInput'
+      responses:
+        '200':
+          description: The updated SMTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SMTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Endpoints]
+      operationId: replaceSMTPEndpoint
+      summary: Update an SMTP endpoint
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SMTPEndpointUpdateInput'
+      responses:
+        '200':
+          description: The updated SMTP endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SMTPEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Endpoints]
+      operationId: deleteSMTPEndpoint
+      summary: Delete an SMTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/address_endpoints:
+    get:
+      tags: [Endpoints]
+      operationId: listAddressEndpoints
+      summary: List address endpoints for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of address endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AddressEndpoint'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Endpoints]
+      operationId: createAddressEndpoint
+      summary: Create an address endpoint for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressEndpointInput'
+      responses:
+        '201':
+          description: The created address endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AddressEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/address_endpoints/{uuid}:
+    get:
+      tags: [Endpoints]
+      operationId: showAddressEndpoint
+      summary: Show an address endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The address endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AddressEndpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Endpoints]
+      operationId: updateAddressEndpoint
+      summary: Update an address endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressEndpointInput'
+      responses:
+        '200':
+          description: The updated address endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AddressEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Endpoints]
+      operationId: replaceAddressEndpoint
+      summary: Update an address endpoint
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddressEndpointInput'
+      responses:
+        '200':
+          description: The updated address endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AddressEndpoint'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Endpoints]
+      operationId: deleteAddressEndpoint
+      summary: Delete an address endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/ip_pool_rules:
+    get:
+      tags: [IP Pools]
+      operationId: listServerIPPoolRules
+      summary: List IP pool rules for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of IP pool rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/IPPoolRule'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [IP Pools]
+      operationId: createServerIPPoolRule
+      summary: Create an IP pool rule for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleInput'
+      responses:
+        '201':
+          description: The created IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/ip_pool_rules/{uuid}:
+    get:
+      tags: [IP Pools]
+      operationId: showServerIPPoolRule
+      summary: Show an IP pool rule for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [IP Pools]
+      operationId: updateServerIPPoolRule
+      summary: Update an IP pool rule for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleUpdateInput'
+      responses:
+        '200':
+          description: The updated IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [IP Pools]
+      operationId: replaceServerIPPoolRule
+      summary: Update an IP pool rule for a server
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IPPoolRuleUpdateInput'
+      responses:
+        '200':
+          description: The updated IP pool rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IPPoolRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [IP Pools]
+      operationId: deleteServerIPPoolRule
+      summary: Delete an IP pool rule for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages:
+    get:
+      tags: [Messages]
+      operationId: listMessages
+      summary: List messages for a server
+      description: |
+        Messages are queried directly from the server's message database. Unlike
+        the web interface the query is fully described by the request: nothing
+        is stored in a session and the same request always returns the same
+        results.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+        - name: scope
+          in: query
+          description: The direction of the messages to return.
+          schema:
+            type: string
+            enum: [outgoing, incoming]
+            default: outgoing
+        - name: to
+          in: query
+          description: An exact recipient address to filter by.
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: An exact sender address to filter by.
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: |
+            An exact status to filter by, for example `Sent`, `Held`, `Bounced`
+            or `Received`.
+          schema:
+            type: string
+        - name: token
+          in: query
+          description: The message token to filter by.
+          schema:
+            type: string
+        - name: message_id
+          in: query
+          description: |
+            The RFC822 `Message-ID` header value to filter by. When this is
+            provided the `scope` and `spam` filters are dropped so that bounces
+            and other related messages are returned too.
+          schema:
+            type: string
+        - name: tag
+          in: query
+          description: The tag to filter by.
+          schema:
+            type: string
+        - name: id
+          in: query
+          description: The integer message ID to filter by.
+          schema:
+            type: integer
+        - name: spam
+          in: query
+          description: Only return messages which were marked as spam.
+          schema:
+            type: string
+            enum: ['true', 'false']
+            default: 'false'
+        - name: before
+          in: query
+          description: |
+            Only return messages received before this time. Accepts
+            `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or a natural language phrase such
+            as `2 hours ago`.
+          schema:
+            type: string
+          example: "2024-01-31 23:59"
+        - name: after
+          in: query
+          description: |
+            Only return messages received after this time. Accepts the same
+            formats as `before`.
+          schema:
+            type: string
+          example: "2024-01-01"
+        - name: order
+          in: query
+          description: The direction to sort by timestamp.
+          schema:
+            type: string
+            enum: [newest-first, oldest-first]
+            default: newest-first
+      responses:
+        '200':
+          description: A paginated list of messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          description: |
+            A time filter could not be parsed. The `code` will be
+            `TimeUndetermined`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/held:
+    get:
+      tags: [Messages]
+      operationId: listHeldMessages
+      summary: List the messages which are currently held
+      description: A shortcut for listing messages regardless of their scope.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of held messages.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Message'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/suppressions:
+    get:
+      tags: [Messages]
+      operationId: listSuppressions
+      summary: List the suppression list for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of suppressions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Suppression'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Messages]
+      operationId: createSuppression
+      summary: Add an address to the suppression list
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, address]
+              properties:
+                type:
+                  type: string
+                  enum: [recipient]
+                address:
+                  type: string
+                  example: bounce@example.com
+                reason:
+                  type: string
+                  description: Why the address was suppressed.
+                  example: Added manually
+                days:
+                  type: integer
+                  description: |
+                    How many days the suppression should last. Omit to use the
+                    installation default.
+      responses:
+        '201':
+          description: The created suppression.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Suppression'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/suppressions/{suppression_type}/{suppression_address}:
+    delete:
+      tags: [Messages]
+      operationId: deleteSuppression
+      summary: Remove an address from the suppression list
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/SuppressionType'
+        - $ref: '#/components/parameters/SuppressionAddress'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: |
+            There is no suppression for this address and type, or the server
+            could not be found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}:
+    get:
+      tags: [Messages]
+      operationId: showMessage
+      summary: Show a message
+      description: |
+        Includes the parsed headers, plain body, HTML body and attachment
+        metadata.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The message.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/deliveries:
+    get:
+      tags: [Messages]
+      operationId: listMessageDeliveries
+      summary: List the delivery attempts for a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The delivery attempts, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Delivery'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/activity:
+    get:
+      tags: [Messages]
+      operationId: listMessageActivity
+      summary: List the deliveries, clicks and loads for a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The activity entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ActivityEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/spam_checks:
+    get:
+      tags: [Messages]
+      operationId: listMessageSpamChecks
+      summary: List the spam check results for a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The spam checks, highest score first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpamCheck'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/plain:
+    get:
+      tags: [Messages]
+      operationId: showMessagePlainBody
+      summary: Show the plain text body of a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The plain text body.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      body:
+                        type:
+                          - string
+                          - 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/html:
+    get:
+      tags: [Messages]
+      operationId: showMessageHTMLBody
+      summary: Show the HTML body of a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The HTML body.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      body:
+                        type:
+                          - string
+                          - 'null'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/headers:
+    get:
+      tags: [Messages]
+      operationId: showMessageHeaders
+      summary: Show the parsed headers of a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The headers as a string keyed object.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      headers:
+                        type: object
+                        description: |
+                          Keyed by the lower cased header name. Each value is a
+                          list because a header may legitimately appear more
+                          than once, for example `Received`.
+                        additionalProperties:
+                          type: array
+                          items:
+                            type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/attachments:
+    get:
+      tags: [Messages]
+      operationId: listMessageAttachments
+      summary: List the attachments of a message
+      description: |
+        Returns metadata only. Use the `attachment` endpoint with the position
+        of an entry in this list to download its content.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The attachment metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      attachments:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Attachment'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/attachment:
+    get:
+      tags: [Messages]
+      operationId: downloadMessageAttachment
+      summary: Download one attachment of a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+        - $ref: '#/components/parameters/AttachmentIndex'
+      responses:
+        '200':
+          description: |
+            The decoded content of the attachment. The `Content-Type` is the one
+            the message part declared, so it is not known in advance; the
+            filename is given in the `Content-Disposition` header.
+          content:
+            "*/*":
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/download:
+    get:
+      tags: [Messages]
+      operationId: downloadMessage
+      summary: Download the raw RFC822 message
+      description: |
+        Returns the message as an `.eml` file. Returns `404` when the raw
+        message has expired out of retention.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The raw message.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/retry:
+    post:
+      tags: [Messages]
+      operationId: retryMessage
+      summary: Retry delivery of a message
+      description: |
+        If the message is already in the queue it is retried immediately,
+        otherwise a new queue entry is created and marked as manual. Returns
+        `422` with the code `MessageUnavailable` when the raw message is no
+        longer stored.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The message after the retry was scheduled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/cancel_hold:
+    post:
+      tags: [Messages]
+      operationId: cancelMessageHold
+      summary: Cancel the hold on a message
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '200':
+          description: The message after the hold was cancelled.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/remove_from_queue:
+    delete:
+      tags: [Messages]
+      operationId: removeMessageFromQueue
+      summary: Remove a message from the delivery queue
+      description: |
+        This action is idempotent. Removing a message which is not in the queue
+        still returns `204`. Messages which are currently locked by a worker
+        are left alone.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
