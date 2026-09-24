@@ -7,6 +7,158 @@ Rails.application.routes.draw do
   match "/api/v1/messages/message" => "legacy_api/messages#message", via: [:get, :post, :patch, :put]
   match "/api/v1/messages/deliveries" => "legacy_api/messages#deliveries", via: [:get, :post, :patch, :put]
 
+  # The management API. This is a JSON API which allows almost everything that
+  # the web UI allows to be managed over HTTP. It is authenticated using an API
+  # token rather than a session. The legacy API above retains the /api/v1 prefix
+  # so this API is mounted at /api/v2.
+  namespace :api, defaults: { format: :json } do
+    namespace :v2 do
+      # The OpenAPI specification for this API. This is not authenticated.
+      get "spec" => "spec#show"
+
+      # Details of the user who owns the API token used for the request.
+      get "me" => "session#show"
+
+      # API tokens belonging to the authenticated user.
+      resources :tokens, only: [:index, :create, :destroy]
+
+      # IP pools are read-only. They are needed because servers and IP pool
+      # rules both reference an IP pool by ID.
+      resources :ip_pools, only: [:index]
+
+      resources :organizations, only: [:index, :create]
+
+      scope "organizations/:organization_permalink", as: :organization do
+        get "" => "organizations#show"
+        patch "" => "organizations#update"
+        delete "" => "organizations#destroy"
+
+        resources :domains, only: [:index, :create]
+        scope "domains/:domain_uuid" do
+          get "" => "domains#show"
+          delete "" => "domains#destroy"
+          post "verify" => "domains#verify"
+          post "check" => "domains#check"
+          get "dns_records" => "domains#dns_records"
+        end
+
+        resources :ip_pool_rules, only: [:index, :create]
+        scope "ip_pool_rules/:uuid" do
+          get "" => "ip_pool_rules#show"
+          patch "" => "ip_pool_rules#update"
+          put "" => "ip_pool_rules#update"
+          delete "" => "ip_pool_rules#destroy"
+        end
+
+        resources :servers, only: [:index, :create]
+
+        scope "servers/:server_permalink", as: :server do
+          get "" => "servers#show"
+          patch "" => "servers#update"
+          put "" => "servers#update"
+          delete "" => "servers#destroy"
+          post "suspend" => "servers#suspend"
+          post "unsuspend" => "servers#unsuspend"
+          get "queue" => "servers#queue"
+
+          resources :domains, only: [:index, :create]
+          scope "domains/:domain_uuid" do
+            get "" => "domains#show"
+            delete "" => "domains#destroy"
+            post "verify" => "domains#verify"
+            post "check" => "domains#check"
+            get "dns_records" => "domains#dns_records"
+          end
+
+          resources :track_domains, only: [:index, :create]
+          scope "track_domains/:uuid" do
+            get "" => "track_domains#show"
+            patch "" => "track_domains#update"
+            put "" => "track_domains#update"
+            delete "" => "track_domains#destroy"
+            post "toggle_ssl" => "track_domains#toggle_ssl"
+            post "check" => "track_domains#check"
+          end
+
+          resources :credentials, only: [:index, :create]
+          scope "credentials/:uuid" do
+            get "" => "credentials#show"
+            patch "" => "credentials#update"
+            put "" => "credentials#update"
+            delete "" => "credentials#destroy"
+          end
+
+          resources :routes, only: [:index, :create]
+          scope "routes/:uuid" do
+            get "" => "routes#show"
+            patch "" => "routes#update"
+            put "" => "routes#update"
+            delete "" => "routes#destroy"
+          end
+
+          resources :http_endpoints, only: [:index, :create]
+          scope "http_endpoints/:uuid" do
+            get "" => "http_endpoints#show"
+            patch "" => "http_endpoints#update"
+            put "" => "http_endpoints#update"
+            delete "" => "http_endpoints#destroy"
+          end
+
+          resources :smtp_endpoints, only: [:index, :create]
+          scope "smtp_endpoints/:uuid" do
+            get "" => "smtp_endpoints#show"
+            patch "" => "smtp_endpoints#update"
+            put "" => "smtp_endpoints#update"
+            delete "" => "smtp_endpoints#destroy"
+          end
+
+          resources :address_endpoints, only: [:index, :create]
+          scope "address_endpoints/:uuid" do
+            get "" => "address_endpoints#show"
+            patch "" => "address_endpoints#update"
+            put "" => "address_endpoints#update"
+            delete "" => "address_endpoints#destroy"
+          end
+
+          resources :ip_pool_rules, only: [:index, :create]
+          scope "ip_pool_rules/:uuid" do
+            get "" => "ip_pool_rules#show"
+            patch "" => "ip_pool_rules#update"
+            put "" => "ip_pool_rules#update"
+            delete "" => "ip_pool_rules#destroy"
+          end
+
+          resources :messages, only: [:index]
+          scope "messages" do
+            get "held" => "messages#held"
+            get "suppressions" => "messages#suppressions"
+            post "suppressions" => "messages#create_suppression"
+            # The suppression address is an e-mail address so it must be able to
+            # contain dots. Dynamic segments do not match dots by default
+            # because the dot is normally the format separator.
+            delete "suppressions/:suppression_type/:suppression_address" => "messages#destroy_suppression", constraints: { suppression_address: /[^\/]+/ }
+
+            scope ":id" do
+              get "" => "messages#show"
+              get "deliveries" => "messages#deliveries"
+              get "activity" => "messages#activity"
+              get "spam_checks" => "messages#spam_checks"
+              get "plain" => "messages#plain"
+              get "html" => "messages#html"
+              get "headers" => "messages#raw_headers"
+              get "attachments" => "messages#attachments"
+              get "attachment" => "messages#attachment"
+              get "download" => "messages#download"
+              post "retry" => "messages#retry"
+              post "cancel_hold" => "messages#cancel_hold"
+              delete "remove_from_queue" => "messages#remove_from_queue"
+            end
+          end
+        end
+      end
+    end
+  end
+
   scope "org/:org_permalink", as: "organization" do
     resources :domains, only: [:index, :new, :create, :destroy] do
       match :verify, on: :member, via: [:get, :post]

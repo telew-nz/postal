@@ -40,6 +40,14 @@ module Postal
     require "tracking_middleware"
     config.middleware.insert_before ActionDispatch::HostAuthorization, TrackingMiddleware
 
+    # Errors which never reach a controller — most often a routing error for a
+    # path which does not match any documented operation — are rendered as HTML
+    # by default. The management API documents a JSON error envelope for every
+    # one of its responses, so anything beneath its prefix is rendered that way
+    # instead. The web UI keeps the default behaviour.
+    require "postal/api_exceptions_app"
+    config.exceptions_app = Postal::APIExceptionsApp.new
+
     config.hosts << Postal::Config.postal.web_hostname
 
     unless Postal::Config.logging.rails_log_enabled?
