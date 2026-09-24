@@ -34,6 +34,7 @@ RSpec.configure do |config|
   config.infer_spec_type_from_file_location!
   config.include FactoryBot::Syntax::Methods
   config.include GeneralHelpers
+  config.include APIHelpers, type: :request
 
   # Before all request specs, set the hostname to the web hostname for
   # Postal otherwise it'll be www.example.com which will fail host
