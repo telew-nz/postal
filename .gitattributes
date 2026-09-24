@@ -1,0 +1,45 @@
+# Line endings.
+#
+# This is a Linux application and every text file in the repository is stored
+# with LF. Without this file the form a checkout takes is decided entirely by
+# each clone's core.autocrlf, which on Windows means CRLF in the working tree.
+#
+# That is what breaks `bundle exec rake` in the Docker image: PATH resolves
+# /opt/postal/app/bin ahead of the system gems, so the binstub is used, and a
+# CRLF shebang dies with "/usr/bin/env: 'ruby\r': No such file or directory"
+# before it runs anything. Dockerfile.production and
+# script/production/normalize-crlf.sh both exist only to undo that after the
+# fact. Marking the affected files here removes the cause instead.
+#
+# `text=auto` preserves the existing behaviour for everything else -- LF in the
+# repository, and whatever core.autocrlf asks for in the working tree -- so
+# adding this file does not silently rewrite a checkout that already exists.
+# Only the patterns below change the checkout form, and only on a fresh checkout
+# or an explicit re-normalization.
+* text=auto
+
+# The bin binstubs are the files that actually fail. They have no extension, so
+# they need naming explicitly.
+bin/* text eol=lf
+
+# Shell scripts are read by sh and bash, neither of which tolerates a carriage
+# return -- least of all in the shebang.
+*.sh text eol=lf
+
+# The deploy tooling and the image entrypoint are executed, not sourced.
+deploy/**/*.sh text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Never normalize anything binary. `text=auto` should detect these correctly,
+# but an explicit marker is cheaper than a corrupted image.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.key binary
+*.pdf binary
