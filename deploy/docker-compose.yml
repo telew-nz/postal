@@ -113,6 +113,37 @@ x-postal-env: &postal-env
   # subnet declared at the bottom of this file; deploy.sh doctor checks that the
   # address cloudflared actually got is inside it.
   POSTAL_USE_IP_POOLS: ${POSTAL_USE_IP_POOLS:-false}
+  # The dns.* names. Nothing else carries them into the container: config/postal.yml
+  # is committed and declares no dns section, so without these the application
+  # resolves every one from lib/postal/config_schema.rb's defaults --
+  # mx1.postal.example.com, rp.postal.example.com and the rest -- while
+  # ./deploy.sh dns prints the .env values and tells the operator to publish those
+  # instead. The two then disagree where it cannot be recovered after the fact:
+  # DKIM is signed against dns.return_path_domain, so the receiver looks up
+  # postal._domainkey.rp.postal.example.com, finds nothing, and verification fails
+  # for every message sent. ./deploy.sh doctor reports any still on example.com.
+  #
+  # These names are not a convention to guess at. Konfig's environment source
+  # builds them as path.map(&:upcase).join("_"), so dns.return_path_domain is
+  # DNS_RETURN_PATH_DOMAIN the same way smtp_server.tls_enabled above is
+  # SMTP_SERVER_TLS_ENABLED.
+  #
+  # Defaulted to the schema's own values rather than to empty, and the colon in
+  # :- matters: Konfig raises ValueNotPresentError only when a key is absent, so
+  # an empty variable is a value, and dns.mx_records -- an array attribute, split
+  # on /\s*,\s*/ -- would resolve to [] instead of falling back. A blank in .env
+  # therefore behaves exactly like an unset one. Comma-separate several MX names.
+  DNS_MX_RECORDS: ${DNS_MX_RECORDS:-mx1.postal.example.com,mx2.postal.example.com}
+  DNS_SPF_INCLUDE: ${DNS_SPF_INCLUDE:-spf.postal.example.com}
+  DNS_RETURN_PATH_DOMAIN: ${DNS_RETURN_PATH_DOMAIN:-rp.postal.example.com}
+  DNS_ROUTE_DOMAIN: ${DNS_ROUTE_DOMAIN:-routes.postal.example.com}
+  DNS_TRACK_DOMAIN: ${DNS_TRACK_DOMAIN:-track.postal.example.com}
+  # The schema gives helo_hostname no default, and the sender falls back to
+  # smtp_hostname before localhost, so that is what an absent value means here.
+  DNS_HELO_HOSTNAME: ${DNS_HELO_HOSTNAME:-${POSTAL_SMTP_HOSTNAME}}
+  DNS_DKIM_IDENTIFIER: ${DNS_DKIM_IDENTIFIER:-postal}
+  DNS_DOMAIN_VERIFY_PREFIX: ${DNS_DOMAIN_VERIFY_PREFIX:-postal-verification}
+  DNS_CUSTOM_RETURN_PATH_PREFIX: ${DNS_CUSTOM_RETURN_PATH_PREFIX:-psrp}
   WAIT_FOR_TIMEOUT: "120"
   WAIT_FOR_TARGETS: mariadb:3306
 

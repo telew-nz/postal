@@ -69,7 +69,7 @@ doctor_cmd() {
     doctor_runner
   fi
 
-  doctor_summary
+  doctor_summary || return 1
   return 0
 }
 
@@ -216,7 +216,13 @@ doctor_stack() {
 doctor_http() {
   local url="https://${POSTAL_WEB_HOSTNAME}/api/v2/spec"
   local code
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null || echo 000)"
+  # `|| true`, not `|| echo 000`: curl has already written its own %{http_code}
+  # to stdout when it fails, so appending a second one produced "000000", which
+  # matched no arm of the case below and was reported as an unknown status. The
+  # `|| true` is still needed -- errexit is active, and a bare assignment whose
+  # command substitution fails aborts the whole command.
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null || true)"
+  code="$(normalize_http_code "$code")"
 
   case $code in
     200) d_ok "GET $url -> 200" ;;
@@ -254,7 +260,8 @@ doctor_http() {
     cid="$(container_of postal)"
     origin_code="$(docker exec "$cid" sh -c \
       'curl -sS -o /dev/null -w "%{http_code}" --max-time 10 -H "Host: $POSTAL_WEB_HOSTNAME" http://127.0.0.1:5000/api/v2/spec' \
-      2>/dev/null || echo 000)"
+      2>/dev/null || true)"
+    origin_code="$(normalize_http_code "$origin_code")"
     case $origin_code in
       200) d_ok "origin answers 200 with the right Host header" ;;
       403) d_fail "origin answers 403: POSTAL_WEB_HOSTNAME != postal.web_hostname" ;;
@@ -274,8 +281,11 @@ doctor_api() {
   local saved="${POSTAL_API_TOKEN:-}"
   POSTAL_API_TOKEN=""
 
-  local body
-  body="$(api_request GET /api/v2/me)"
+  # Not `body="$(api_request ...)"`: that runs api_request in a subshell and
+  # leaves API_STATUS at its initialized value, so the case below would always
+  # take the 000 arm and report the API as unreachable whatever it answered.
+  api_request GET /api/v2/me
+  local body="$API_BODY"
   case $API_STATUS in
     401)
       if printf '%s' "$body" | grep -q MissingAPIKey; then
@@ -296,7 +306,8 @@ doctor_api() {
     return 0
   fi
 
-  body="$(api_request GET /api/v2/me)"
+  api_request GET /api/v2/me
+  body="$API_BODY"
   case $API_STATUS in
     200)
       local email
@@ -311,6 +322,11 @@ doctor_api() {
         fail "  $body"
       fi
       ;;
+    # The same branch the unauthenticated check above has. Without it one
+    # unreachable host produced a skip and a FAIL for the same cause, and the
+    # FAIL read as a broken installation rather than as a host with no route to
+    # the public hostname.
+    000) d_skip "authenticated API check (the API is unreachable from here)" ;;
     *) d_fail "GET /api/v2/me with the saved key -> $API_STATUS" ;;
   esac
   return 0
@@ -731,8 +747,12 @@ doctor_config() {
 # resolve to nothing, so mail signed for them cannot be verified and cannot be
 # delivered, and no error is raised anywhere.
 doctor_config_defaults() {
+  # mx_records is an array, so this depends on json_get reading arrays: with the
+  # scalar-only form it came back empty, and an empty value never matches
+  # *example.com*, so the one dns.* key with two defaults was the one key this
+  # check could not see.
   local keys=(smtp_hostname return_path_domain route_domain track_domain
-              spf_include helo_hostname)
+              spf_include helo_hostname mx_records)
   local k v leftover=""
   for k in "${keys[@]}"; do
     v="$(json_get "$DOCTOR_CFG" "$k")"

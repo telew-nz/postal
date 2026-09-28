@@ -106,7 +106,11 @@ dns_cmd() {
   log ""
   log "  After publishing, verify each domain:"
   log "    POST /api/v2/organizations/:org/domains/:uuid/verify"
-  log "    POST /api/v2/organizations/:org/domains/:uuid/check"
+  log "    POST /api/v2/organizations/:org/servers/:server/domains/:uuid/verify"
+  log ""
+  log "  Which of the two applies depends on whether the domain is attached to the"
+  log "  organization or to a single server. The per-domain lines above print the"
+  log "  exact path for each, so copy it from there rather than guessing."
   log ""
   log "  Then confirm what actually resolves:  ./deploy.sh doctor"
   return 0
@@ -177,8 +181,11 @@ dns_per_domain() {
 
   require_cmd curl
 
-  local orgs
-  orgs="$(api_request GET /api/v2/organizations)"
+  # Not `orgs="$(api_request ...)"`: the command substitution would run
+  # api_request in a subshell, leaving API_STATUS at its initialized value and
+  # this branch permanently taken. See api_request in lib/common.sh.
+  api_request GET /api/v2/organizations
+  local orgs="$API_BODY"
   if [[ $API_STATUS != 200 ]]; then
     warn "GET /api/v2/organizations -> ${API_STATUS}"
     dns_api_hint "$orgs"
@@ -187,8 +194,16 @@ dns_per_domain() {
 
   # The envelope is {data: [...], pagination: {...}}, and each organization has a
   # permalink which is the path segment the nested routes take.
+  # `{ grep ... || true; }` because a response with no permalinks in it makes
+  # grep exit 1, and under pipefail that becomes the command substitution's
+  # status -- so errexit aborts the whole command here, before the branch below
+  # can say that a fresh installation simply has no organizations yet. An empty
+  # list is the normal starting state rather than an error, and the info line
+  # below is the message that reports it.
   local permalinks
-  permalinks="$(printf '%s' "$orgs" | grep -o '"permalink":"[^"]*"' | sed 's/"permalink":"//; s/"$//')"
+  permalinks="$(printf '%s' "$orgs" |
+                { grep -o '"permalink":"[^"]*"' || true; } |
+                sed 's/"permalink":"//; s/"$//')"
 
   if [[ -z $permalinks ]]; then
     info "no organizations exist yet, so there are no domains to publish records for."
@@ -207,23 +222,80 @@ dns_per_domain() {
 dns_one_organization() {
   local org=$1 verify_prefix=$2 rp_prefix=$3
 
-  local body
-  body="$(api_request GET "/api/v2/organizations/${org}/domains")"
+  log ""
+  log "  ${C_BOLD}organization ${org}${C_RESET}"
+
+  # Domains are scoped at two levels, and the API treats them as two separate
+  # collections in two separate URL trees:
+  #
+  #   /organizations/:org/domains                    owned by the organization
+  #   /organizations/:org/servers/:srv/domains       owned by one server
+  #
+  # A domain you intend to send from is normally attached to the server, so
+  # walking only the first of these -- as this originally did -- printed an
+  # organization header, printed no records, and exited 0. Nothing failed, which
+  # is what made it easy to miss: the collection it asked about genuinely was
+  # empty, and the domains were in the one it never asked about.
+  dns_domains_under "/api/v2/organizations/${org}" "    " "$verify_prefix" "$rp_prefix"
+
+  api_request GET "/api/v2/organizations/${org}/servers"
   if [[ $API_STATUS != 200 ]]; then
-    warn "GET /api/v2/organizations/${org}/domains -> ${API_STATUS}"
+    warn "GET /api/v2/organizations/${org}/servers -> ${API_STATUS}"
     return 0
   fi
 
-  log ""
-  log "  ${C_BOLD}organization ${org}${C_RESET}"
+  # The server's own permalink. `full_permalink` and `organization_permalink`
+  # appear in the same objects but do not collide with this pattern: both are
+  # preceded by an underscore, and the pattern requires a quote immediately
+  # before `permalink`.
+  # `{ grep ... || true; }` because an organization with no servers makes grep
+  # exit 1, and pipefail would hand that to errexit.
+  local servers
+  servers="$(printf '%s' "$API_BODY" |
+             { grep -o '"permalink":"[^"]*"' || true; } |
+             sed 's/"permalink":"//; s/"$//')"
+
+  local srv
+  while read -r srv; do
+    [[ -n $srv ]] || continue
+    log ""
+    log "    ${C_BOLD}server ${srv}${C_RESET}"
+    dns_domains_under "/api/v2/organizations/${org}/servers/${srv}" "      " \
+                      "$verify_prefix" "$rp_prefix"
+  done <<<"$servers"
+
+  return 0
+}
+
+# Every domain in one collection, and the records for each.
+#
+#   $1  the API path the collection hangs off, with no trailing /domains
+#   $2  how far to indent the domain name, so nesting stays visible
+#
+# $1 is carried through to the verify and dns_records URLs rather than being
+# rebuilt from the organization permalink: a server-scoped domain 404s on the
+# org-scoped path, so the URL has to come from the collection it was listed in.
+dns_domains_under() {
+  local base=$1 indent=$2 verify_prefix=$3 rp_prefix=$4
+
+  api_request GET "${base}/domains"
+  local body="$API_BODY"
+  if [[ $API_STATUS != 200 ]]; then
+    warn "GET ${base}/domains -> ${API_STATUS}"
+    return 0
+  fi
 
   # Split the data array into one object per line so that each domain's fields can
   # be read from the same object rather than from positionally-matched lists, which
   # would silently misalign if any domain omitted a field. Rails renders compact
   # JSON, so the separator between elements is exactly `},{`.
+  # `{ grep ... || true; }`: a collection with no domains makes grep exit 1, and
+  # pipefail would propagate that to errexit -- aborting the whole `dns` command
+  # after it has already printed the headers above. Every organization, and every
+  # server just created, starts with zero domains, so this is the common case.
   printf '%s' "$body" |
     sed 's/},{/}\n{/g' |
-    grep -o '{[^{}]*"uuid"[^{}]*}' |
+    { grep -o '{[^{}]*"uuid"[^{}]*}' || true; } |
     while read -r d; do
       local uuid name verified token
       uuid="$(printf '%s' "$d" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
@@ -234,40 +306,45 @@ dns_one_organization() {
       [[ -n $uuid && -n $name ]] || continue
 
       log ""
-      log "    ${C_BOLD}${name}${C_RESET}"
+      log "${indent}${C_BOLD}${name}${C_RESET}"
 
       if [[ $verified != true ]]; then
         # The dns_records endpoint answers 422 NotVerified until the domain has
         # been verified, so for an unverified domain the only record that can be
         # published is the one which makes verification possible.
         dns_row TXT "${verify_prefix}.${name}" "${verify_prefix} ${token}"
-        info "publish that, then POST /api/v2/organizations/${org}/domains/${uuid}/verify"
+        info "publish that, then POST ${base}/domains/${uuid}/verify"
         info "and re-run ./deploy.sh dns for the remaining records."
         continue
       fi
 
-      dns_domain_records "$org" "$uuid" "$name" "$rp_prefix"
+      dns_domain_records "${base}/domains/${uuid}" "$rp_prefix"
     done
 
   return 0
 }
 
+# $1 is the domain's own API path, so an org-scoped and a server-scoped domain
+# each resolve to the dns_records URL they actually answer on.
 dns_domain_records() {
-  local org=$1 uuid=$2 name=$3 rp_prefix=$4
+  local base=$1 rp_prefix=$2
 
-  local body
-  body="$(api_request GET "/api/v2/organizations/${org}/domains/${uuid}/dns_records")"
+  api_request GET "${base}/dns_records"
+  local body="$API_BODY"
   if [[ $API_STATUS != 200 ]]; then
-    warn "      GET .../domains/${uuid}/dns_records -> ${API_STATUS}"
+    warn "      GET ${base}/dns_records -> ${API_STATUS}"
     return 0
   fi
 
   # Matched on "host", which every record has and which the sibling `domain`
   # object in the same response does not. Matching on "type" instead would be
   # ambiguous: DomainSerializer renders owner_type.
+  # `{ grep ... || true; }` for the same reason as in dns_one_organization: a
+  # response carrying no records makes grep exit 1, and pipefail would abort the
+  # command rather than print nothing for this domain and carry on.
   printf '%s' "$body" |
     sed 's/},{/}\n{/g' |
-    grep -o '{[^{}]*"host"[^{}]*}' |
+    { grep -o '{[^{}]*"host"[^{}]*}' || true; } |
     while read -r r; do
       local type rname host value required status
       type="$(printf '%s' "$r" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"

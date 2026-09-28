@@ -143,6 +143,17 @@ init_site_values() {
     fi
   fi
 
+  # Prompted for but deliberately not added to init_report's required set: an
+  # installation with no public address is a legitimate configuration, and
+  # failing init over it would be wrong. It is asked about because both of its
+  # consumers degrade quietly rather than reporting anything -- dns cannot print
+  # the A records the MX entries point at, and doctor cannot check that the PTR
+  # record matches DNS_HELO_HOSTNAME, which is the single most common reason
+  # outbound mail is rejected. Pressing enter leaves it empty, which init_prompt
+  # treats as a skipped question rather than as an error.
+  init_prompt POSTAL_PUBLIC_IP \
+    "This host's public IPv4, for PTR and A records (blank if none)"
+
   return 0
 }
 
@@ -294,6 +305,18 @@ init_report() {
     log "  Edit $ENV_FILE, or re-run:"
     log "    ./deploy.sh init --domain example.com"
     return 1
+  fi
+
+  # Reported separately rather than added to the list above, for the reason given
+  # where it is prompted: a host with no public address is a legitimate
+  # configuration, so this must not fail init. Leaving it unsaid would let the
+  # omission survive to delivery time, where it presents as rejected mail rather
+  # than as a missing value.
+  if [[ -z $(env_get POSTAL_PUBLIC_IP) ]]; then
+    warn "POSTAL_PUBLIC_IP is empty. That is correct for a host with no public"
+    warn "  address; otherwise set it, because ./deploy.sh dns cannot print the"
+    warn "  A records without it and ./deploy.sh doctor cannot check that the PTR"
+    warn "  record matches DNS_HELO_HOSTNAME."
   fi
 
   ok "all required values are set"

@@ -20,6 +20,25 @@
 
 BACKUP_DIR=""
 
+# The directory the EXIT trap should remove, and the trap body itself.
+#
+# Both backup_cmd and restore_cmd mktemp a working directory holding the signing
+# key and a full database dump, and both want it gone even when a failure path
+# goes through die. But an EXIT trap fires after main has exited, so it cannot
+# reference their `local work`: the local is out of scope by then, and under
+# `set -u` the reference is a "work: unbound variable" error. That is not
+# cosmetic -- it replaced the exit status of a backup which had already written
+# and reported its archive, so ./deploy.sh backup always exited 1.
+#
+# A global the trap reads at fire time, set immediately after each mktemp.
+_CLEANUP_DIR=""
+cleanup_on_exit() {
+  [[ -n $_CLEANUP_DIR ]] && rm -rf "$_CLEANUP_DIR"
+  # Unconditional: the trap's own status must not become the script's, and an
+  # empty _CLEANUP_DIR is the normal case for every command but these two.
+  return 0
+}
+
 backup_cmd() {
   local label="" volume=false stop=false keep=7 out=""
 
@@ -58,7 +77,11 @@ backup_cmd() {
   # through die, which calls exit. That would leave a directory holding the
   # signing key and a full database dump on disk after a failed backup, which is
   # exactly the kind of thing that is never noticed.
-  trap 'rm -rf "$work"' EXIT
+  #
+  # Through cleanup_on_exit rather than an inline 'rm -rf "$work"': $work is a
+  # local of this function and the trap fires after it has gone out of scope.
+  _CLEANUP_DIR="$work"
+  trap cleanup_on_exit EXIT
 
   step "Backing up to ${archive##*/}"
 
@@ -172,9 +195,14 @@ backup_databases() {
 
 backup_database_list() {
   local cid=$1
+  # `{ grep ... || true; }` so that an installation with no Postal schemas yet
+  # yields an empty string for the caller to report, instead of a non-zero
+  # pipeline status that pipefail hands to errexit. backup_run tests the result
+  # for emptiness and dies with an explanation; without this guard that message
+  # is unreachable and the command exits silently.
   docker exec -i "$cid" sh -c \
     'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb -u root -N -B -e "SHOW DATABASES"' 2>/dev/null |
-    grep -E '^(postal|postal-server-)' |
+    { grep -E '^(postal|postal-server-)' || true; } |
     tr '\n' ' '
 }
 
@@ -350,8 +378,10 @@ restore_cmd() {
   local work
   work="$(mktemp -d "${TMPDIR:-/tmp}/postal-restore.XXXXXX")"
   # EXIT rather than RETURN, for the reason given in backup_cmd: the failure
-  # paths below all go through die.
-  trap 'rm -rf "$work"' EXIT
+  # paths below all go through die. Same indirection through a global, because
+  # $work is a local and the trap outlives it.
+  _CLEANUP_DIR="$work"
+  trap cleanup_on_exit EXIT
 
   step "Inspecting ${archive##*/}"
   tar -xzf "$archive" -C "$work" || die "could not read '$archive'"

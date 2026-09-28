@@ -43,7 +43,10 @@ up_cmd() {
   compose up -d --remove-orphans
 
   if [[ $wait == true ]]; then
-    up_wait
+    # up_wait has already printed the compose state and the two commands which
+    # diagnose it, so returning here loses nothing an operator needs -- and
+    # without it `up` exits 0 over an unhealthy stack.
+    up_wait || return 1
   fi
 
   up_report
@@ -229,11 +232,17 @@ status_cmd() {
     # ActionDispatch::HostAuthorization and says nothing about whether Rails is up.
     body="$(docker exec "$cid" sh -c \
       'curl -sS -o /dev/null -w "%{http_code}" -H "Host: $POSTAL_WEB_HOSTNAME" http://127.0.0.1:5000/api/v2/spec' \
-      2>/dev/null || echo unreachable)"
+      2>/dev/null || true)"
+    # Normalized for the same reason doctor_http normalizes: curl has already
+    # written its own code, so `|| echo unreachable` appended to it and reported
+    # "000unreachable".
+    body="$(normalize_http_code "$body")"
     case $body in
       200) ok "GET /api/v2/spec -> 200" ;;
       403) fail "GET /api/v2/spec -> 403. HostAuthorization rejected the Host header;"
            fail "POSTAL_WEB_HOSTNAME does not match postal.web_hostname." ;;
+      000) fail "GET /api/v2/spec -> no response. The web process is not serving"
+           fail "on 5000 inside the container; ./deploy.sh logs postal" ;;
       *)   fail "GET /api/v2/spec -> $body" ;;
     esac
   fi

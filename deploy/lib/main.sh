@@ -13,9 +13,15 @@ main() {
 
   local status=0
 
-  # `|| status=$?` rather than letting set -e act: a command which fails for a
-  # reason the operator has already been told about should still reach the exit
-  # below, so that deploy.sh reports one status rather than dying mid-case.
+  # No `|| status=$?` on the esac below. It reads as if it only catches the
+  # unknown command, but a case statement on the left of || suspends errexit for
+  # all of it, so every command in the dispatch ran with set -e disabled: `up`
+  # printed "Next: ./deploy.sh admin" over an unhealthy container and exited 0,
+  # and `doctor` printed eleven failures and exited 0 despite doctor_summary
+  # returning 1 and its own usage promising it can gate a release. die was
+  # unaffected because it exits rather than returns, which is why this survived
+  # review. A failing command now propagates; the exit carries only the
+  # unknown-command status, which is set by assignment and so never trips.
   case $cmd in
     # Setup
     init)      init_cmd "$@" ;;
@@ -58,7 +64,7 @@ main() {
       main_usage >&2
       status=2
       ;;
-  esac || status=$?
+  esac
 
   exit "$status"
 }

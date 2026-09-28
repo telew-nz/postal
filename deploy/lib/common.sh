@@ -287,22 +287,48 @@ container_of() {
 # surrounds it. These extract scalars from it.
 #
 # Deliberately not a JSON parser: jq is not a prerequisite anyone should have to
-# install to deploy a mail server, and every value extracted here is a flat
-# scalar produced by a script in this directory, so its shape is known. Nothing
-# here addresses a nested object, and the helpers are written so that no nested
-# key collides with a scalar one.
+# install to deploy a mail server, and every value extracted here is produced by
+# a script in this directory, so its shape is known. Nothing here addresses a
+# nested object, and the helpers are written so that no nested key collides with
+# a scalar one.
+#
+# One level of array is handled, and it has to be: dns.mx_records and
+# web.trusted_proxies are arrays, and a helper which only reads scalars reports
+# them as empty -- which for trusted_proxies reads as "the application trusts
+# nothing" on an installation which trusts the compose subnet correctly.
+# Elements come back comma separated with quotes and whitespace stripped, so a
+# caller can match on a substring or split on commas. An empty array and an
+# absent key are both reported as empty; no caller here needs them apart.
 
-# A string field: "key":"value". Empty for null and for absent keys.
+# A string or array field. Empty for null, for [] and for absent keys.
 json_get() {
-  local json=$1 key=$2
+  local json=$1 key=$2 out
+  out="$(printf '%s' "$json" \
+    | sed -n "s/.*[{,]\"${key}\":\[\([^]]*\)\].*/\1/p" | head -n1)"
+  if [[ -n ${out// /} ]]; then
+    printf '%s' "$out" | tr -d '" '
+    return 0
+  fi
   printf '%s' "$json" | sed -n "s/.*\"${key}\":\"\([^\"]*\)\".*/\1/p" | head -n1
+  # Unconditional: an absent key is a normal answer, not an error, and once
+  # errexit reaches this far a bare sed with no match would abort the caller.
+  return 0
 }
 
 # A non-string field: number, true, false or null. The value keeps its quotes if
-# it is a string, so prefer json_get for those.
+# it is a string, so prefer json_get for those. Arrays are stripped the same way
+# json_get strips them, because [^,}]* would otherwise stop at the first comma
+# and hand back a truncated fragment.
 json_get_raw() {
-  local json=$1 key=$2
+  local json=$1 key=$2 out
+  out="$(printf '%s' "$json" \
+    | sed -n "s/.*[{,]\"${key}\":\[\([^]]*\)\].*/\1/p" | head -n1)"
+  if [[ -n ${out// /} ]]; then
+    printf '%s' "$out" | tr -d '" '
+    return 0
+  fi
   printf '%s' "$json" | sed -n "s/.*\"${key}\":\([^,}]*\).*/\1/p" | head -n1
+  return 0
 }
 
 # The marker line itself, from output which also contains Rails logging.
@@ -362,17 +388,48 @@ api_base_url() {
   fi
 }
 
-# Call the API. The body goes to stdout; the status code lands in API_STATUS so
-# that a caller can distinguish 401 MissingAPIKey from 401 InvalidAPIKey by
-# reading the body without losing the code.
+# curl's %{http_code} is not portable in the value it reports for "no response
+# at all": GNU curl prints 000, and other builds print 0. Both mean the same
+# thing, and every caller here matches on the three-digit form -- doctor_api has
+# an explicit `000) d_skip "the API is unreachable from here"` branch which a
+# bare 0 falls straight past into d_fail, reporting an unreachable host as a
+# broken one. Anything that is not exactly three digits is reported as 000.
+normalize_http_code() {
+  local code=${1:-}
+  [[ $code =~ ^[0-9]{3}$ ]] || code=000
+  printf '%s' "$code"
+  return 0
+}
+
+# Call the API. Sets two globals and prints nothing:
+#
+#   API_STATUS  the three-digit status, or 000 when there was no response at all
+#   API_BODY    the response body
+#
+# Globals rather than stdout, because every caller needs the body and the status
+# together and `body="$(api_request ...)"` cannot supply both: a command
+# substitution runs the function in a subshell, so an assignment inside it dies
+# with that subshell and the caller reads whatever API_STATUS was initialized to.
+# All five call sites did exactly that, which made doctor's
+# `000) d_skip "the API is unreachable from here"` fire unconditionally and dns's
+# three live lookups skip without ever examining a response they had made.
+# Neither was an environmental limitation, and neither was visible: a skip and a
+# warning read as facts about the host. Calling this inside $(...) is now a bug
+# rather than a style choice -- assign from $API_BODY instead.
+#
+# No `-o`. curl writes the body to stdout by default, and `-o /dev/stdout` is not
+# portable: Git Bash's curl fails the write with exit 23, "client returned ERROR
+# on write of N bytes", so on a Windows host the body arrived empty even when the
+# request had succeeded. The `2>/dev/null` below is what hid the reason.
 #
 #   api_request GET /api/v2/me
 #   api_request POST /api/v2/tokens "$json_body"
-API_STATUS=0
+API_STATUS=000
+API_BODY=""
 api_request() {
   local method=$1 path=$2 body=${3:-}
   local token=${POSTAL_API_TOKEN:-}
-  local -a args=(-sS -o /dev/stdout -w '\n%{http_code}' -X "$method"
+  local -a args=(-sS -w '\n%{http_code}' -X "$method"
                  -H 'Accept: application/json' --max-time 30)
 
   # The header is X-Postal-API-Key. `Authorization: Bearer` is not accepted: it
@@ -385,11 +442,12 @@ api_request() {
   fi
 
   local out
-  # `|| true` because curl exits non-zero on 4xx with --fail, and on any HTTP
-  # error without it; here a 401 is a result to report, not a failure to abort on.
+  # `|| true` because curl exits non-zero when it cannot connect at all; that is
+  # a result to report as 000, not a failure to abort the caller on.
   out="$(curl "${args[@]}" "$(api_base_url)$path" 2>/dev/null || true)"
-  API_STATUS="$(printf '%s' "$out" | tail -n1)"
-  printf '%s' "$out" | sed '$d'
+  API_STATUS="$(normalize_http_code "$(printf '%s' "$out" | tail -n1)")"
+  API_BODY="$(printf '%s' "$out" | sed '$d')"
+  return 0
 }
 
 # ---------------------------------------------------------------------------

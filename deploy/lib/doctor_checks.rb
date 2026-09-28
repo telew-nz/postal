@@ -87,7 +87,15 @@ emit(MARKER, {
   api_enabled: config.api.enabled?,
   signing_key_path: config.postal.signing_key_path,
   signing_key_present: File.readable?(config.postal.signing_key_path.to_s),
-  trusted_proxies: Array(config.postal.trusted_proxies).map(&:to_s),
+  # CIDR, not to_s. IPAddr#to_s returns the address alone -- "172.28.0.0" for
+  # 172.28.0.0/24 -- and #to_string returns the same thing, so neither can be
+  # compared against the compose subnet as doctor writes it. Without the prefix
+  # this reported a correctly configured installation as trusting the wrong
+  # network. #prefix is Ruby 3.1+; the guard keeps a bare address working on
+  # anything older, where the comparison degrades to what it did before.
+  trusted_proxies: Array(config.postal.trusted_proxies).map { |ip|
+    ip.respond_to?(:prefix) ? "#{ip}/#{ip.prefix}" : ip.to_s
+  },
   mx_records: Array(config.dns.mx_records),
   spf_include: config.dns.spf_include,
   return_path_domain: config.dns.return_path_domain,
@@ -227,7 +235,12 @@ begin
   # schema on the server.
   current_user = conn.select_value("SELECT CURRENT_USER()").to_s
 
-  visible = conn.query("SHOW DATABASES").map { |row| row.values.first }
+  # select_values rather than `conn.query(...).map { |row| row.values.first }`.
+  # ActiveRecord sets the mysql2 client's default query options to :as => :array,
+  # so a raw query hands back Arrays and `.values` raises NoMethodError -- which
+  # the rescue at the end of this block turns into a one-line error, silently
+  # dropping every check below it including the CURRENT_USER() assertion above.
+  visible = conn.select_values("SHOW DATABASES").map(&:to_s)
 
   # The grant tables are the sharpest probe available. Being unable to read
   # mysql.user is what "cannot reach other schemas" means in practice, and unlike
@@ -289,7 +302,13 @@ end
 begin
   # Read with SQL rather than through the model so that this still reports on an
   # installation whose schema is only part way migrated.
-  rows = ActiveRecord::Base.connection.query(<<~SQL.squish)
+  #
+  # select_all, not query: ActiveRecord configures the mysql2 client with
+  # :as => :array, so query hands back Arrays and the row["ipv4"] lookups below
+  # raise TypeError -- which the rescue at the end of this block turns into a
+  # one-line error and nothing else. select_all returns an ActiveRecord::Result
+  # whose rows are Hashes, so the string keys the code is written against work.
+  rows = ActiveRecord::Base.connection.select_all(<<~SQL.squish).to_a
     SELECT ip_addresses.ipv4 AS ipv4, ip_addresses.hostname AS hostname,
            ip_addresses.priority AS priority, ip_pools.name AS pool
     FROM ip_addresses LEFT JOIN ip_pools ON ip_pools.id = ip_addresses.ip_pool_id

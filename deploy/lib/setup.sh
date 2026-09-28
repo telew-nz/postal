@@ -144,9 +144,13 @@ ip_cmd() {
   # than by an exact field sequence, so adding a field to register_ips.rb cannot
   # silently make this print nothing. `[^{}]*` keeps each match inside one object,
   # which also stops it spanning into the errors array.
+  # `{ grep ... || true; }`: registering no addresses at all is a legitimate
+  # outcome -- POSTAL_IPS empty, or every entry rejected into the errors array
+  # reported below -- and grep exits 1 when it matches nothing, which pipefail
+  # would turn into an abort rather than an empty list.
   printf '%s' "$marker" |
     sed 's/},{/}\n{/g' |
-    grep -o '{[^{}]*"ipv4"[^{}]*}' |
+    { grep -o '{[^{}]*"ipv4"[^{}]*}' || true; } |
     while read -r entry; do
       local v4 host action
       v4="$(printf '%s' "$entry" | sed -n 's/.*"ipv4":"\([^"]*\)".*/\1/p')"
