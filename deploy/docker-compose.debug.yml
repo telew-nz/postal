@@ -24,3 +24,15 @@ services:
   postal:
     ports:
       - "127.0.0.1:5000:5000"
+    # Publishing the port is not on its own enough to use it. config.hosts holds
+    # only postal.web_hostname, so HostAuthorization answers 403 to
+    # http://127.0.0.1:5000 before the request reaches a controller -- which is
+    # indistinguishable from a login failure if you do not know to look for it.
+    # config/application.rb reads this variable and adds the names to the
+    # allow-list; it is read only here, so the default topology is unaffected.
+    #
+    # Merged with, not replacing, the environment from the x-postal-app anchor:
+    # compose merges `environment` key by key across -f files, unlike a YAML merge
+    # key, which would replace the whole mapping.
+    environment:
+      POSTAL_ADDITIONAL_ALLOWED_HOSTS: 127.0.0.1,localhost
