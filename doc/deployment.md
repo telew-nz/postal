@@ -729,6 +729,27 @@ a file by writing a temporary one and renaming it over the target, so the inode 
 holds open is untouched. Rewriting a running script in place, with the same inode,
 does corrupt it — which is why nothing here does that.
 
+## Master scripts
+
+Two convenience wrappers for a throwaway or re-bootstrapable server, in
+`deploy/`:
+
+**`sudo bash deploy/master-destroy.sh`** — stops the stack, removes the
+containers and the MariaDB volume, `rm -rf /opt/postal`, then re-clones the
+repository at the latest `api-v*` tag (or `--ref <tag>`). Requires a typed
+confirmation unless `--yes`. `POSTAL_REPO_DIR` / `POSTAL_REPO_URL` override the
+path and clone source.
+
+**`sudo bash deploy/master-standup.sh`** — runs the full known-good sequence:
+`init` → `cloudflare keys` → `cloudflare provision` → `build` → `migrate` →
+`up` → `admin` → `doctor`. It requires `deploy/.env` to already be seeded with
+the site values and `CLOUDFLARE_API_TOKEN` (`init` fills the remaining secrets;
+`cloudflare keys` copies the unified key to the DNS field). Pass `--domain
+example.com` to derive the `dns.*` names. Any failing step stops the run.
+
+These are convenience tools for an operator on the host; they are not part of
+the `./deploy.sh` command surface.
+
 ## Outbound IP pools
 
 Off by default, and enabling it is not just a flag.
