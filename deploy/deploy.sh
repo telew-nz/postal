@@ -57,6 +57,8 @@ unset _self _link
 . "$LIB_DIR/setup.sh"
 # shellcheck source=lib/dns.sh
 . "$LIB_DIR/dns.sh"
+# shellcheck source=lib/cloudflare.sh
+. "$LIB_DIR/cloudflare.sh"
 # shellcheck source=lib/tls.sh
 . "$LIB_DIR/tls.sh"
 # shellcheck source=lib/doctor.sh

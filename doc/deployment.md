@@ -50,6 +50,11 @@ at all, and MariaDB is on loopback.
   record you can create yourself.
 * A Cloudflare account with the domain on it, able to create a tunnel and an
   Access policy.
+* Optional: to provision the DNS records and the tunnel automatically with
+  `./deploy.sh cloudflare provision`, a Cloudflare API token with three
+  permissions on the zone/account: Zone→DNS→Edit, Zone→Zone→Read, and
+  Account→CFD Tunnel→Edit. Without it the manual steps below still apply and
+  are fully supported.
 * `git`, `openssl` and `curl` on the host. `jq` is not needed; the Ruby helpers
   emit JSON that `deploy.sh` parses itself.
 * Outbound HTTPS to Cloudflare: TCP 443, plus UDP 7844 for QUIC unless cloudflared
@@ -218,6 +223,19 @@ decides which services to start, so a `:?` there would refuse to bring up the
 origin for an operator who has not created a tunnel yet; and diagnosing the origin
 directly, without Cloudflare in the path, is a normal thing to need —
 `./deploy.sh up --without-tunnel`.
+
+### Automating this step
+
+`./deploy.sh cloudflare provision` does all of the above through the Cloudflare
+API when `CLOUDFLARE_API_TOKEN` is set in `.env` (scopes in the prerequisites): it
+creates the tunnel, writes its connector token to `CLOUDFLARE_TUNNEL_TOKEN`,
+creates the public-hostname CNAME pointing at the tunnel, sets the ingress route
+`POSTAL_WEB_HOSTNAME → http://postal:5000`, and provisions the installation-wide DNS
+records (A for the MX names, SPF, return-path MX + DKIM, route MX, tracking
+CNAME). It is idempotent and deletes nothing; `--dry-run` prints what it would do
+without calling the API. It never creates the PTR (that stays with the hosting
+provider) and it does not publish per-domain records, which come from the
+management API once domains exist — run `./deploy.sh dns` after `admin` for those.
 
 ## 4. Build, migrate, up
 

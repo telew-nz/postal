@@ -13,6 +13,7 @@ modes worth knowing about before they happen.
 cd /opt/postal/deploy
 
 ./deploy.sh init --domain example.com   # .env, secrets, DKIM key, database grants
+./deploy.sh cloudflare provision        # optional: create DNS records + tunnel + hostname via the Cloudflare API
 ./deploy.sh build                       # the image, from this checkout
 ./deploy.sh migrate                     # the schema
 ./deploy.sh up                          # the stack, waiting for healthy
@@ -44,6 +45,7 @@ own options.
 | `acme/` | Generated. The ACME client's state: account key, issued certificates, and the per-domain configuration renewal reads. |
 | `lib/*.sh` | One file per command group. |
 | `lib/*.rb` | Helpers run inside the bootstrap container: `ensure_database.rb`, `ensure_admin.rb`, `register_ips.rb`, `doctor_checks.rb`. |
+| `lib/cloudflare.sh` | `./deploy.sh cloudflare` — provisions the DNS records and the tunnel/hostname via the Cloudflare API. Opt-in; the manual steps remain valid. |
 
 Generated on the host, all gitignored: `.env`, `config/signing.key`,
 `database/init/`, `backups/`, `.upgrade-state`, and — if `tls` is used — `acme/`,
