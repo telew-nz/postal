@@ -306,8 +306,14 @@ cf_tunnel_ensure() {
 
   cf_call POST "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel" "{\"name\":\"${name}\"}"
   cf_require_success "create tunnel '$name'" "$CF_HTTP" "$CF_BODY"
-  CF_TUNNEL_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":{"id":"\([^"]*\)".*/\1/p')"
-  [[ -n ${CF_TUNNEL_ID:-} ]] || die "tunnel created but no id in the response"
+  # Tolerant extraction: the create response lists other fields (e.g.
+  # account_tag) before the id, so do not require the id to be the first
+  # field of the result object.
+  CF_TUNNEL_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":{.*"id":"\([^"]*\)".*/\1/p')"
+  if [[ -z ${CF_TUNNEL_ID:-} ]]; then
+    warn "could not read the tunnel id from the create response; looking it up by name"
+    cf_tunnel_find || die "tunnel created but its id could not be determined"
+  fi
   ok "created tunnel '$name' ($CF_TUNNEL_ID)"
 }
 
