@@ -109,14 +109,20 @@ cf_zone_id() {
   local host=$1 name=$1
   while [[ -n $name ]]; do
     cf_call GET "/zones?name=$(cf_urlencode "$name")&per_page=5"
-    if [[ $CF_HTTP == 2* ]] && printf '%s' "$CF_BODY" | grep -q '"success":true'; then
-      local id
-      id="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
-      if [[ -n $id ]]; then
-        CF_ZONE_ID=$id
-        CF_ZONE_NAME=$name
-        return 0
-      fi
+    # A non-2xx or an error envelope is a real failure (permissions, IP
+    # restriction, invalid token) -- not "no zone". Surface it rather than
+    # walking up the domain and reporting a misleading "not found".
+    if [[ $CF_HTTP != 2* ]] || ! printf '%s' "$CF_BODY" | grep -q '"success":true'; then
+      local msg
+      msg="$(printf '%s' "$CF_BODY" | { grep -o '"message":"[^"]*"' || true; } | head -n1 | sed 's/"message":"//; s/"$//')"
+      die "cloudflare: zone lookup for '$host' failed (HTTP $CF_HTTP) ${msg:+($msg)}; check CLOUDFLARE_API_TOKEN scopes and IP restrictions"
+    fi
+    local id
+    id="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
+    if [[ -n $id ]]; then
+      CF_ZONE_ID=$id
+      CF_ZONE_NAME=$name
+      return 0
     fi
     name="${name#*.}"
     [[ $name == *.* ]] || break
