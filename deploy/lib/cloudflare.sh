@@ -176,14 +176,25 @@ cf_record_id() {
 cf_upsert_record() {
   local dry=$1 type=$2 name=$3 content=$4 proxied=$5
   local zone=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
+  local full=$content pri=""
 
-  local data
-  data="{\"type\":\"${type}\",\"name\":\"${name}\",\"content\":\"${content}\",\"proxied\":${proxied},\"ttl\":1}"
+  # Cloudflare requires MX records to carry their priority as a separate field,
+  # with `content` holding only the exchange hostname. Our rows arrive with the
+  # priority glued on front ("10 mx.example.com"); split it here.
+  if [[ $type == MX ]]; then
+    pri="${content%% *}"
+    content="${content#* }"
+  fi
 
   if [[ $dry == true ]]; then
-    log "  [dry-run] dns_records: $type $name -> $content"
+    log "  [dry-run] dns_records: $type $name -> $full"
     return 0
   fi
+
+  local data
+  data="{\"type\":\"${type}\",\"name\":\"${name}\",\"content\":\"${content}\",\"proxied\":${proxied},\"ttl\":1"
+  if [[ -n $pri ]]; then data+=",\"priority\":${pri}"; fi
+  data+="}"
 
   local id
   id="$(cf_record_id "$type" "$name")"
