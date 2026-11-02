@@ -50,11 +50,13 @@ at all, and MariaDB is on loopback.
   record you can create yourself.
 * A Cloudflare account with the domain on it, able to create a tunnel and an
   Access policy.
-* Optional: to provision the DNS records and the tunnel automatically with
-  `./deploy.sh cloudflare provision`, a Cloudflare API token with three
-  permissions on the zone/account: Zone→DNS→Edit, Zone→Zone→Read, and
-  Account→CFD Tunnel→Edit. Without it the manual steps below still apply and
-  are fully supported.
+* Optional: to provision the DNS records, the tunnel, and client-domain zones
+  automatically, a single Cloudflare API token with these permissions:
+  Zone→DNS→Edit, Zone→Zone→Read, Account→CFD Tunnel→Edit, and (for
+  `cloudflare zone add`) Account→Zone→Edit. The Zone resource scope must cover
+  All zones, because a client zone does not exist when the token is created.
+  Set `CLOUDFLARE_ACCOUNT_ID` when the token sees more than one account.
+  Without the token the manual steps below still apply and are fully supported.
 * `git`, `openssl` and `curl` on the host. `jq` is not needed; the Ruby helpers
   emit JSON that `deploy.sh` parses itself.
 * Outbound HTTPS to Cloudflare: TCP 443, plus UDP 7844 for QUIC unless cloudflared
@@ -236,6 +238,19 @@ CNAME). It is idempotent and deletes nothing; `--dry-run` prints what it would d
 without calling the API. It never creates the PTR (that stays with the hosting
 provider) and it does not publish per-domain records, which come from the
 management API once domains exist — run `./deploy.sh dns` after `admin` for those.
+
+### Onboarding a client domain
+
+`./deploy.sh cloudflare zone add <domain>` adds a client's domain as a zone
+(`POST /zones`), prints the two nameservers to give the client, then polls the
+zone until it is `active` (nameserver verification) — the confirmation that the
+client has pointed their NS records at Cloudflare. `cloudflare zone status
+<domain>` shows the current status and nameservers. The zone is created on the
+account the token belongs to; the client is expected to change their registrar
+nameservers to the ones printed. Only then can records be created in the zone
+(via `cloudflare provision` equivalents or the dashboard). This does not create
+the Postal organization/domain — that still goes through the management API and
+`./deploy.sh dns`.
 
 ## 4. Build, migrate, up
 

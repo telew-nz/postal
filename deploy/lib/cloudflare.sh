@@ -30,16 +30,23 @@ CF_API_BASE="https://api.cloudflare.com/client/v4"
 # ---------------------------------------------------------------------------
 
 cf_cmd() {
-  local sub=provision dry=false
+  local sub="${1:-provision}"
+  shift || true
+  local dry=false
+  local -a rest=()
 
   while (($#)); do
     case $1 in
-      provision|dns|tunnel|status) sub=$1; shift ;;
       --dry-run) dry=true; shift ;;
       -h|--help) cf_usage; return 0 ;;
-      *) die "cloudflare: unknown option or subcommand '$1'" ;;
+      *) rest+=("$1"); shift ;;
     esac
   done
+
+  case $sub in
+    provision|dns|tunnel|status|zone) ;;
+    *) die "cloudflare: unknown subcommand '$sub'" ;;
+  esac
 
   require_cmd curl
   load_env
@@ -52,6 +59,7 @@ cf_cmd() {
     dns)      cf_dns_apply "$dry" ;;
     tunnel)    cf_tunnel_apply "$dry" ;;
     status)    cf_status ;;
+    zone)      cf_zone_cmd "$dry" "${rest[@]}" ;;
   esac
 }
 
@@ -119,13 +127,18 @@ cf_zone_id() {
 
 # The owning account of the zone, derived from the zone object when not pinned.
 cf_account_id() {
-  local zone_id=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
   if [[ -n ${CLOUDFLARE_ACCOUNT_ID:-} ]]; then
     CF_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID
     return 0
   fi
-  cf_call GET "/zones/${zone_id}"
-  CF_ACCOUNT_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"account":{"id":"\([^"]*\)".*/\1/p')"
+  # Derive the account from the token's own account list, so that creating a
+  # zone does not depend on an existing zone. With more than one account the
+  # first is used; pin CLOUDFLARE_ACCOUNT_ID to be explicit.
+  cf_call GET /accounts
+  if [[ $CF_HTTP == 2* ]] && printf '%s' "$CF_BODY" | grep -q '"success":true'; then
+    CF_ACCOUNT_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
+  fi
+  [[ -n ${CF_ACCOUNT_ID:-} ]] || die "could not determine the Cloudflare account id; set CLOUDFLARE_ACCOUNT_ID in .env"
 }
 
 # List DNS records for a type+name. One line per record:
@@ -365,9 +378,123 @@ cf_status() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Client domain onboarding: add a zone and confirm activation
+# ---------------------------------------------------------------------------
+
+cf_zone_cmd() {
+  local dry=$1; shift
+  local op="${1:-}"; shift || true
+  case $op in
+    add)    cf_zone_add "$dry" "$@" ;;
+    status) cf_zone_status "$@" ;;
+    *) die "cloudflare zone: expected 'add <domain>' or 'status <domain>'" ;;
+  esac
+}
+
+cf_zone_add() {
+  local dry=$1 domain=$2
+  [[ -n $domain ]] || die "cloudflare zone add: missing domain argument"
+  cf_account_id
+
+  step "Adding zone $domain"
+  cf_call GET "/zones?name=$(cf_urlencode "$domain")&per_page=5"
+  if [[ $CF_HTTP == 2* ]] && printf '%s' "$CF_BODY" | grep -q '"success":true'; then
+    local already
+    already="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
+    if [[ -n $already ]]; then
+      warn "zone '$domain' already exists ($already)."
+      CF_ZONE_ID=$already
+      CF_ZONE_NAME=$domain
+      cf_zone_wait_active "$dry"
+      return 0
+    fi
+  fi
+
+  if [[ $dry == true ]]; then
+    log "  [dry-run] POST /zones {\"name\":\"$domain\",\"type\":\"full\"}"
+    log "  [dry-run] would print the assigned nameservers and wait for activation."
+    return 0
+  fi
+
+  cf_call POST /zones "{\"name\":\"${domain}\",\"type\":\"full\",\"account\":{\"id\":\"${CF_ACCOUNT_ID}\"}}"
+  cf_require_success "create zone '$domain'" "$CF_HTTP" "$CF_BODY"
+  CF_ZONE_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":{"id":"\([^"]*\)".*/\1/p')"
+  [[ -n ${CF_ZONE_ID:-} ]] || die "zone created but no id in the response"
+  CF_ZONE_NAME=$domain
+  ok "created zone '$domain' ($CF_ZONE_ID)"
+
+  echo ""
+  echo "  Point the domain's nameservers at Cloudflare:"
+  cf_zone_print_ns "$CF_BODY"
+  echo ""
+  cf_zone_wait_active "$dry"
+}
+
+cf_zone_print_ns() {
+  local body=$1 ns
+  ns="$(printf '%s' "$body" | sed -n 's/.*"name_servers":\[\([^]]*\)\].*/\1/p')"
+  if [[ -n $ns ]]; then
+    printf '%s\n' "$ns" | tr ',' '\n' | sed 's/^ *//; s/"//g; s/^/    /'
+  else
+    echo "    (name servers not present in the response; copy them from the dashboard)"
+  fi
+}
+
+cf_zone_wait_active() {
+  local dry=$1
+  if [[ $dry == true ]]; then
+    log "  [dry-run] skip waiting for activation"
+    return 0
+  fi
+  local status="" tries=0
+  until [[ $status == active ]]; do
+    cf_call GET "/zones/${CF_ZONE_ID}"
+    [[ $CF_HTTP == 2* ]] || break
+    status="$(printf '%s' "$CF_BODY" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+    [[ -n $status ]] || status="(unknown)"
+    if [[ $status != active ]]; then
+      tries=$((tries+1))
+      if (( tries > 60 )); then
+        warn "zone '$CF_ZONE_NAME' is still not active after ~10 minutes."
+        warn "Confirm the nameservers were updated at the registrar."
+        return 1
+      fi
+      printf '  waiting for nameserver verification: %s (attempt %s/60)\r' "$status" "$tries"
+      sleep 10
+    fi
+  done
+  printf '\n'
+  if [[ $status == active ]]; then
+    ok "zone '$CF_ZONE_NAME' is active: nameservers verified."
+    log "  You can now publish DNS records in this zone."
+  fi
+}
+
+cf_zone_status() {
+  local domain=$1
+  [[ -n $domain ]] || die "cloudflare zone status: missing domain argument"
+  cf_call GET "/zones?name=$(cf_urlencode "$domain")&per_page=5"
+  [[ $CF_HTTP == 2* ]] || die "could not look up zone '$domain' (HTTP $CF_HTTP)"
+  local id status ns
+  id="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
+  if [[ -z $id ]]; then
+    echo "  zone '$domain': not found in this account"
+    return 0
+  fi
+  status="$(printf '%s' "$CF_BODY" | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
+  echo "  zone: $domain ($id)"
+  echo "  status: ${status:-?}"
+  ns="$(printf '%s' "$CF_BODY" | sed -n 's/.*"name_servers":\[\([^]]*\)\].*/\1/p')"
+  if [[ -n $ns ]]; then
+    echo "  nameservers:"
+    printf '%s\n' "$ns" | tr ',' '\n' | sed 's/^ *//; s/"//g; s/^/    /'
+  fi
+}
+
 cf_usage() {
   cat <<'USAGE'
-Usage: ./deploy.sh cloudflare [provision|dns|tunnel|status] [--dry-run]
+Usage: ./deploy.sh cloudflare [provision|dns|tunnel|status|zone ...] [--dry-run]
 
 Provision Cloudflare for this installation via the API.
 
@@ -375,11 +502,19 @@ Provision Cloudflare for this installation via the API.
   dns        Only the installation-wide DNS records.
   tunnel      Only the tunnel, its token and the web hostname route.
   status      Read-only summary of the zone, tunnel and web CNAME.
+  zone add <domain>
+              Add a client domain as a zone, print its nameservers, and wait
+              for activation (NS verification).
+  zone status <domain>
+              Show a zone's status and nameservers.
   --dry-run   Print what would be done without calling the API.
 
-Requires in .env: CLOUDFLARE_API_TOKEN (Zone:DNS:Edit, Zone:Zone:Read,
-Account:CFD_TUNNEL:Edit). CLOUDFLARE_ZONE_ID / CLOUDFLARE_ACCOUNT_ID are
-optional overrides. The PTR record still has to be set at the hosting provider.
+Requires in .env: CLOUDFLARE_API_TOKEN. For the installation commands it needs
+Zone:DNS:Edit, Zone:Zone:Read and Account:CFD_TUNNEL:Edit. Adding client zones
+additionally needs Account:Zone:Edit and Zone resources over All zones (or at
+least the client zones), plus CLOUDFLARE_ACCOUNT_ID when the token sees more
+than one account. CLOUDFLARE_ZONE_ID is an optional override for the install
+zone. The PTR record still has to be set at the hosting provider.
 
 Idempotent: matches and updates existing records and tunnels. Deletes nothing.
 USAGE
