@@ -402,9 +402,10 @@ validate.
 
 | Command | Effect |
 | --- | --- |
-| `tls issue [--staging]` | Creates the `_acme-challenge` TXT records, waits for them to propagate, obtains the certificate, then runs `install`. Always passes `--force`, so it replaces a certificate that is not near expiry — that costs rate limit, which is why the limit is printed first |
+| `tls issue [--staging] [--wildcard DOMAIN]` | Creates the `_acme-challenge` TXT records, waits for them to propagate, obtains the certificate, then runs `install`. Always passes `--force`, so it replaces a certificate that is not near expiry — that costs rate limit, which is why the limit is printed first. `--wildcard DOMAIN` issues `DOMAIN` and `*.DOMAIN` (DNS-01) instead of the MX hostnames |
 | `tls renew [--force]` | Renews the existing certificate **as it stands**, then installs it. Exits 0 and changes nothing when the certificate is not yet due |
 | `tls install` | Copies the pair into `config/`, sets ownership, flips `SMTP_SERVER_TLS_ENABLED`, recreates `smtp` |
+| `tls import CERT KEY` | Installs an already-obtained certificate (e.g. a wildcard issued elsewhere) into `config/smtp.cert` and `config/smtp.key`, flips `SMTP_SERVER_TLS_ENABLED`, recreates `smtp`. Provide a fullchain, leaf first. Imported certificates are not renewed by this tool |
 | `tls status` | Reads the installed certificate back: chain length, issuer, subject alternative names, expiry, whether the key matches |
 
 ### Why `install` recreates the container rather than restarting it

@@ -69,6 +69,7 @@ tls_cmd() {
     issue)   tls_issue "$@" ;;
     renew)   tls_renew "$@" ;;
     install) tls_install_cmd "$@" ;;
+    import)  tls_import_cmd "$@" ;;
     status)  tls_status "$@" ;;
     -h|--help) tls_usage; return 0 ;;
     *)
@@ -83,10 +84,14 @@ tls_cmd() {
 # container: the files are on the host, port 25 is published on the host, and a
 # check which ran inside the network namespace it is inspecting would not be
 # checking the same thing an external sender reaches.
-tls_prepare() {
+tls_prepare_base() {
   require_cmd docker
   require_cmd openssl
   load_env
+}
+
+tls_prepare() {
+  tls_prepare_base
   need_env POSTAL_SMTP_HOSTNAME DNS_MX_RECORDS
 }
 
@@ -155,19 +160,37 @@ tls_cert_source() {
 # ---------------------------------------------------------------------------
 # issue
 
+# Build the name list for a wildcard issuance: the apex plus its wildcard,
+# primary (and therefore the acme.sh state directory) being the apex. DNS-01
+# is required for wildcards; the command already uses it.
+tls_set_wildcard_domains() {
+  local domain=$1
+  domain="$(printf '%s' "$domain" | tr '[:upper:]' '[:lower:]')"
+  [[ -n $domain ]] || die "--wildcard needs a base domain"
+  [[ $domain != \** ]] || die "--wildcard takes the base domain (e.g. example.com), not '*.example.com'"
+  [[ $domain == *.* ]] || die "--wildcard must be a registered domain (e.g. example.com)"
+  TLS_DOMAINS=("$domain" "*.$domain")
+}
+
 tls_issue() {
-  local staging=false
+  local staging=false wildcard=""
   while (($#)); do
     case $1 in
       --staging) staging=true; shift ;;
+      --wildcard) wildcard=${2:?--wildcard needs a domain}; shift 2 ;;
       -h|--help) tls_usage; return 0 ;;
       *) die "tls issue: unknown option '$1'" ;;
     esac
   done
 
-  tls_prepare
+  tls_prepare_base
   need_env CLOUDFLARE_DNS_API_TOKEN ACME_CONTACT_EMAIL
-  tls_load_domains
+  if [[ -n $wildcard ]]; then
+    tls_set_wildcard_domains "$wildcard"
+  else
+    need_env POSTAL_SMTP_HOSTNAME DNS_MX_RECORDS
+    tls_load_domains
+  fi
   if [[ $staging == true ]]; then TLS_CA="$ACME_CA_STAGING"; else TLS_CA="$ACME_CA_PRODUCTION"; fi
   tls_check_contact_email
 
@@ -285,7 +308,7 @@ tls_renew() {
   issued="$(tls_cert_sans "$(tls_cert_source "$primary")")"
   if [[ -n $issued ]]; then
     for n in ${TLS_DOMAINS[@]+"${TLS_DOMAINS[@]}"}; do
-      if ! printf '%s\n' "$issued" | grep -qx -- "$n"; then missing+=("$n"); fi
+      if ! printf '%s\n' "$issued" | grep -Fxq -- "$n"; then missing+=("$n"); fi
     done
     if ((${#missing[@]})); then
       warn "the installed certificate does not cover: ${missing[*]}"
@@ -432,6 +455,94 @@ tls_install() {
   else
     tls_reload_smtp
   fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# import
+#
+# Install an already-obtained certificate (for example a wildcard issued
+# elsewhere) into config/smtp.cert and config/smtp.key, enable TLS and recreate
+# the smtp container. Shares the install semantics of tls_install: owned by
+# uid 999, fullchain leaf-first, and only enabling TLS once the files are in
+# place and readable.
+
+tls_import_cmd() {
+  local cert="" key=""
+  while (($#)); do
+    case $1 in
+      -h|--help) tls_usage; return 0 ;;
+      --) shift; break ;;
+      -*) die "tls import: unknown option '$1'" ;;
+      *)
+        if [[ -z $cert ]]; then cert=$1
+        elif [[ -z $key ]]; then key=$1
+        else die "tls import: too many arguments"; fi
+        shift
+        ;;
+    esac
+  done
+  [[ -n $cert && -n $key ]] || die "tls import requires CERT KEY paths"
+  tls_prepare
+  tls_import "$cert" "$key"
+}
+
+tls_import() {
+  local cert=$1 key=$2
+  step "Importing certificate into config/"
+  [[ -f $cert ]] || die "certificate file not found: $cert"
+  [[ -f $key ]] || die "private key file not found: $key"
+  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || die "$cert is not a valid PEM certificate"
+  openssl pkey -in "$key" -noout >/dev/null 2>&1 || die "$key is not a valid PEM private key"
+
+  local cm km
+  cm="$(openssl x509 -in "$cert" -noout -pubkey 2>/dev/null | openssl sha256)"
+  km="$(openssl pkey -in "$key" -pubout 2>/dev/null | openssl sha256)"
+  if [[ -n $cm && -n $km && $cm != "$km" ]]; then
+    warn "the private key does not match the certificate's public key."
+  fi
+
+  local chain
+  chain="$(tls_cert_chain_count "$cert")"
+  if (( chain < 2 )); then
+    warn "the certificate file contains only 1 certificate (no intermediate)."
+    warn "  Provide a fullchain (leaf first, then intermediates) or ./deploy.sh doctor"
+    warn "  will report the TLS chain as a failure."
+  fi
+
+  local before="" after=""
+  if [[ -f $TLS_CERT ]]; then
+    before="$(openssl x509 -in "$TLS_CERT" -noout -fingerprint -sha256 2>/dev/null || true)"
+  fi
+
+  install -m 644 "$cert" "$TLS_CERT"
+  install -m 600 "$key" "$TLS_KEY"
+  after="$(openssl x509 -in "$TLS_CERT" -noout -fingerprint -sha256 2>/dev/null || true)"
+
+  ok "config/smtp.cert installed (${chain:-0} $([ "${chain:-0}" = 1 ] && echo certificate || echo certificates) in the chain)"
+  ok "config/smtp.key installed (mode 600)"
+
+  local readable=true
+  ensure_owned_by_postal "$TLS_CERT" || readable=false
+  ensure_owned_by_postal "$TLS_KEY" || readable=false
+  if [[ $readable != true ]]; then
+    warn "uid $POSTAL_UID cannot read the installed files, so TLS is NOT being enabled."
+    warn "  Fix the ownership printed above, then re-run:  ./deploy.sh tls import $cert $key"
+    return 1
+  fi
+
+  local was_enabled="${SMTP_SERVER_TLS_ENABLED:-false}"
+  env_set SMTP_SERVER_TLS_ENABLED true
+  ok "SMTP_SERVER_TLS_ENABLED=true in .env"
+
+  if [[ $was_enabled == true && -n $after && "$before" == "$after" ]]; then
+    info "the installed certificate is unchanged, so nothing is restarted"
+  else
+    tls_reload_smtp
+  fi
+  log ""
+  log "  Next:  ./deploy.sh status"
+  log "         ./deploy.sh doctor"
   return 0
 }
 
@@ -784,12 +895,15 @@ Usage: ./deploy.sh tls SUBCOMMAND [options]
 A publicly trusted certificate for inbound SMTP, issued by Let's Encrypt with a
 DNS-01 challenge answered through the Cloudflare API.
 
-  issue [--staging]   Obtain a certificate covering POSTAL_SMTP_HOSTNAME and
+  issue [--staging] [--wildcard DOMAIN]
+                      Obtain a certificate covering POSTAL_SMTP_HOSTNAME and
                       every name in DNS_MX_RECORDS, install it into config/ and
                       switch SMTP_SERVER_TLS_ENABLED on. --staging uses the
                       Let's Encrypt test CA: it proves the DNS-01 flow without
                       spending production rate limit, and produces a certificate
-                      nobody trusts.
+                      nobody trusts. --wildcard DOMAIN issues a wildcard for
+                      DOMAIN and its apex (e.g. --wildcard example.com issues
+                      example.com and *.example.com) using DNS-01.
   renew [--force]     Renew if inside the window set at issue time, then install
                       and recreate the smtp container only if the certificate
                       actually changed. Idempotent, and safe from a timer; exits
@@ -797,6 +911,11 @@ DNS-01 challenge answered through the Cloudflare API.
   install             Re-copy from the client's state directory, fix ownership,
                       switch TLS on and recreate smtp. Use after a chown, or to
                       recover config/ from a backup without re-issuing.
+  import CERT KEY     Install an already-obtained certificate (for example a
+                      wildcard issued elsewhere) into config/smtp.cert and
+                      config/smtp.key, switch TLS on and recreate smtp. Provide
+                      a fullchain, leaf first. Imported certificates are not
+                      renewed by this tool.
   status              What is installed: subject, issuer, SAN coverage against
                       the names this configuration needs, chain length, days to
                       expiry, whether the key matches, and a real STARTTLS
