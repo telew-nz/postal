@@ -5,6 +5,41 @@
 # runs db:migrate. That decision is made by Postal's own `postal:update` task, not
 # here, so there is one implementation of it rather than two that can drift.
 
+# Reconcile the application database user and grants against the current .env,
+# so that a MariaDB volume initialized before the grant script existed -- or
+# with an older password -- converges to the running configuration instead of
+# leaving the app serving access-denied. Idempotent and safe to re-run.
+ensure_database_grants() {
+  local cid user
+  user="${MAIN_DB_USERNAME:-postal}"
+  cid="$(docker compose ps -q mariadb 2>/dev/null || true)"
+  [[ -n $cid ]] || die "mariadb container is not running; cannot reconcile database grants"
+
+  # The same statements init renders into database/init/001-postal-user.sql,
+  # applied to the live server so an existing volume catches up. MYSQL_PWD is
+  # injected via docker exec rather than on the command line, so the password
+  # never appears in argv /proc.
+  local sql
+  sql="CREATE USER IF NOT EXISTS '${user}'@'%' IDENTIFIED BY '${MAIN_DB_PASSWORD}';
+ALTER USER '${user}'@'%' IDENTIFIED BY '${MAIN_DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON \`postal\`.* TO '${user}'@'%';
+GRANT ALL PRIVILEGES ON \`postal-server-%\`.* TO '${user}'@'%';
+FLUSH PRIVILEGES;"
+
+  local err
+  err="$(printf '%s' "$sql" | docker exec -i -e MYSQL_PWD="$MARIADB_ROOT_PASSWORD" "$cid" mariadb -u root 2>&1)" || {
+    printf '%s\n' "$err" | tail -n3 | while read -r l; do warn "  $l"; done
+    die "could not apply the application database grants as root: the volume's root password differs from .env. Recreate the volume with ./deploy.sh reset (a fresh volume initializes from the current .env), or match MARIADB_ROOT_PASSWORD to the volume."
+  }
+
+  # Prove the application user can actually authenticate with the .env password.
+  if ! docker exec -i -e MYSQL_PWD="$MAIN_DB_PASSWORD" "$cid" \
+      mariadb -h127.0.0.1 -u "$user" -N -B -e "SELECT 1" >/dev/null 2>&1; then
+    die "database grant reconciliation did not produce a working '${user}' login"
+  fi
+  ok "database grants reconciled for user '${user}'"
+}
+
 migrate_cmd() {
   while (($#)); do
     case $1 in
@@ -15,8 +50,11 @@ migrate_cmd() {
 
   require_cmd docker
   load_env
-  need_env POSTAL_IMAGE MAIN_DB_PASSWORD
+  need_env POSTAL_IMAGE MAIN_DB_PASSWORD MARIADB_ROOT_PASSWORD
   require_image
+
+  step "Reconciling database grants"
+  ensure_database_grants
 
   step "Migrating"
 
@@ -69,6 +107,12 @@ Usage: ./deploy.sh migrate
 
 Creates the main database if it does not exist, loads or migrates the schema, and
 runs migrations against every server's message database. Idempotent.
+
+Before that it reconciles the application database user and grants against the
+current .env, so a volume initialized before the grant script existed (or with
+an older password) is fixed rather than leaving the app serving access-denied.
+If the volume's root password differs from .env this fails with instructions to
+recreate the volume with ./deploy.sh reset.
 
 Starts MariaDB if it is not already running, because the bootstrap container
 depends on it and a migration against an absent database reports a connection

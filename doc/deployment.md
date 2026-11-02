@@ -820,6 +820,7 @@ database changes only `main_db`/`message_db` and removes the loopback publish.
 | Stack is healthy but completely empty | The compose project name changed, so the MariaDB volume name changed | `COMPOSE_PROJECT` and the `name:` in `docker-compose.yml` must agree; `doctor` checks this |
 | Configuration seems to be ignored entirely | `config/postal.yml` has no `version: 2` | Add it. Without it the file is read as legacy v1 and every v2 key is silently dropped |
 | Sessions invalid after every restart | `SECRET_KEY_BASE` was set instead of `RAILS_SECRET_KEY` | Use `RAILS_SECRET_KEY` |
+| MariaDB logs `Access denied for user 'postal'` | The volume was initialized without the grant, or with an older password (the initdb.d script only runs on an empty volume) | `./deploy.sh migrate` reconciles the grants against `.env`; if its root auth fails, `./deploy.sh reset` to recreate the volume |
 | Access logs and Authie show the tunnel's IP | `postal.trusted_proxies` does not cover the cloudflared subnet | Pin the subnet in all three places; `doctor` checks them |
 | Web container permanently unhealthy, but `curl` inside works | The healthcheck is not setting `Host` | It does; if you edited it, `$$` is compose's escape for a literal `$` |
 | Mail queues and never sends | Outbound port 25 blocked by the provider | Ask the provider. Nothing fails loudly when this is blocked |
