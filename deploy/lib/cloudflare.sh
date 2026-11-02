@@ -280,13 +280,12 @@ cf_zone_ready() {
 
 cf_tunnel_find() {
   local name=${CLOUDFLARE_TUNNEL_NAME:-postal}
-  cf_call GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=$(cf_urlencode "$name")&per_page=50"
+  cf_call GET "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?name=$(cf_urlencode "$name")&per_page=5"
   [[ $CF_HTTP == 2* ]] || return 1
-  CF_TUNNEL_ID="$(printf '%s' "$CF_BODY" |
-    sed 's/},{/}\n{/g' |
-    { grep -o '{[^{}]*"name":"'"$name"'"[^{}]*}' || true; } |
-    head -n1 |
-    sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
+  # Anchored extraction: tunnel objects contain nested `connections`/`metadata`
+  # fields, so a brace-free split misses them. The name filter means the first
+  # element of the result array is the tunnel we want.
+  CF_TUNNEL_ID="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p')"
   [[ -n ${CF_TUNNEL_ID:-} ]]
 }
 
