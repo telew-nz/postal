@@ -71,15 +71,17 @@ precheck_cold() {
   local -a ctr=() vols=()
   local v
 
-  mapfile -t ctr < <(docker ps -aq -f name=postal 2>/dev/null || true)
-  while IFS= read -r v; do [[ -n $v ]] && vols+=("$v"); done \
-    < <(docker volume ls -q 2>/dev/null | grep '^postal_' || true)
-
-  # The compose project volume may be named by the project rather than the
-  # prefix; a compose down -v from the checkout catches it.
+  # Pull the compose project down first, including its volumes. This is what
+  # removes the volume in the common case, so the manual sweeps below are only
+  # for things the compose project did not own.
   if [[ -d $DEPLOY ]]; then
     ( cd "$DEPLOY" && docker compose down -v --remove-orphans 2>/dev/null || true )
   fi
+
+  # Re-detect what remains after the compose project is gone.
+  mapfile -t ctr < <(docker ps -aq -f name=postal 2>/dev/null || true)
+  while IFS= read -r v; do [[ -n $v ]] && vols+=("$v"); done \
+    < <(docker volume ls -q 2>/dev/null | grep '^postal_' || true)
 
   if [[ ${#ctr[@]} -eq 0 && ${#vols[@]} -eq 0 ]]; then
     echo "  clean: no postal containers or volumes present."
@@ -95,12 +97,13 @@ precheck_cold() {
     [[ $ans == y || $ans == Y ]] || die "aborted"
   fi
 
+  # Tolerant removals: anything already gone is not an error.
   if ((${#ctr[@]})); then
-    docker rm -f "${ctr[@]}" >/dev/null
+    docker rm -f "${ctr[@]}" >/dev/null 2>&1 || true
     echo "  removed ${#ctr[@]} container(s)"
   fi
   if ((${#vols[@]})); then
-    docker volume rm "${vols[@]}" >/dev/null
+    docker volume rm "${vols[@]}" >/dev/null 2>&1 || true
     echo "  removed ${#vols[@]} volume(s)"
   fi
 }
