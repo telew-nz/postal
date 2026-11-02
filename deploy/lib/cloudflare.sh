@@ -349,7 +349,9 @@ cf_tunnel_web_cname() {
 cf_tunnel_ingress() {
   local dry=$1
   local data
-  data="{\"config\":{\"ingress\":[{\"hostname\":\"${POSTAL_WEB_HOSTNAME}\",\"service\":\"http://postal:5000\",\"originRequest\":{\"connectTimeout\":\"30s\",\"noTLSVerify\":true,\"http2Origin\":false}},{\"service\":\"http_status:404\"}]}}"
+  # connectTimeout must be an integer number of seconds for the Cloudflare API;
+  # the "30s" duration form is only valid in the on-disk cloudflared config.
+  data="{\"config\":{\"ingress\":[{\"hostname\":\"${POSTAL_WEB_HOSTNAME}\",\"service\":\"http://postal:5000\",\"originRequest\":{\"connectTimeout\":30,\"noTLSVerify\":true,\"http2Origin\":false}},{\"service\":\"http_status:404\"}]}}"
   if [[ $dry == true ]]; then
     log "  [dry-run] set tunnel ingress for $POSTAL_WEB_HOSTNAME -> http://postal:5000"
     return 0
