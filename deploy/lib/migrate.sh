@@ -9,10 +9,33 @@
 # so that a MariaDB volume initialized before the grant script existed -- or
 # with an older password -- converges to the running configuration instead of
 # leaving the app serving access-denied. Idempotent and safe to re-run.
+# Start mariadb if it is not already running, and wait for it to be healthy.
+# Called before reconciliation so migrate works from a cold start (fresh
+# volume, no containers), where the bootstrap container's dependency is not
+# available yet.
+ensure_mariadb_running() {
+  local cid
+  cid="$(compose ps -q mariadb 2>/dev/null || true)"
+  if [[ -n $cid ]]; then
+    return 0
+  fi
+  ok "starting mariadb"
+  compose up -d mariadb >/dev/null
+  local tries=0
+  until [[ $(docker inspect -f '{{.State.Health.Status}}' "$(compose ps -q mariadb 2>/dev/null)" 2>/dev/null) == healthy ]]; do
+    tries=$((tries+1))
+    if (( tries > 90 )); then
+      die "mariadb did not become healthy after starting"
+    fi
+    sleep 2
+  done
+}
+
 ensure_database_grants() {
   local cid user
   user="${MAIN_DB_USERNAME:-postal}"
-  cid="$(docker compose ps -q mariadb 2>/dev/null || true)"
+  ensure_mariadb_running
+  cid="$(compose ps -q mariadb 2>/dev/null || true)"
   [[ -n $cid ]] || die "mariadb container is not running; cannot reconcile database grants"
 
   # The same statements init renders into database/init/001-postal-user.sql,
