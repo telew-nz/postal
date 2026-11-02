@@ -38,6 +38,26 @@ namespace :postal do
       Rake::Task["db:schema:load"].invoke
     end
   end
+
+  desc "Create an API token for a user (e-mail address, name)"
+  task :create_api_token, [:email_address, :name] => :environment do |_task, args|
+    args.with_defaults(name: "API Token")
+
+    user = User.where(email_address: args[:email_address].to_s.strip).first
+    if user.nil?
+      puts "No user exists with the e-mail address '#{args[:email_address]}'."
+      exit 1
+    end
+
+    token = user.api_tokens.create!(name: args[:name])
+
+    puts "An API token named '#{token.name}' has been created for #{user.email_address}."
+    puts ""
+    puts "  #{token.plain_key}"
+    puts ""
+    puts "This is the only time this token will be displayed. Only the hash of it is"
+    puts "stored so it cannot be recovered if it is lost."
+  end
 end
 
 Rake::Task["db:migrate"].enhance do

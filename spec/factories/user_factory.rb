@@ -34,5 +34,9 @@ FactoryBot.define do
     password { "passw0rd" }
     email_verified_at { Time.now }
     sequence(:email_address) { |n| "user#{n}@example.com" }
+
+    trait :admin do
+      admin { true }
+    end
   end
 end

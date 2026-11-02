@@ -1,0 +1,49 @@
+# Reference configuration for a locally-managed Cloudflare Tunnel.
+#
+# The default deployment does NOT read this file. docker-compose.yml runs
+# cloudflared in token mode, where the ingress rules live in the Zero Trust
+# dashboard and the only secret on this host is CLOUDFLARE_TUNNEL_TOKEN in .env.
+# That is the recommended path and the one doc/deployment.md describes.
+#
+# This file exists because the ingress target is the single easiest thing to get
+# wrong, and because some installations need the tunnel definition under version
+# control rather than in a dashboard. To use it, switch the cloudflared service
+# to config mode:
+#
+#   command: ["tunnel", "--no-autoupdate", "--config",
+#             "/etc/cloudflared/config.yml", "run"]
+#   volumes:
+#     - ./cloudflared:/etc/cloudflared:ro
+#
+# and create the tunnel with `cloudflared tunnel create postal`, which writes the
+# credentials JSON this file points at. That file is a secret: it allows anyone
+# holding it to serve traffic as this tunnel. Keep it out of git, and note that
+# CLOUDFLARE_TUNNEL_TOKEN is then unused.
+
+tunnel: postal
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # The web UI and the JSON management API. Both are served by the same Puma
+  # process; /api/v2 is a route namespace, not a separate service, so one
+  # hostname covers both.
+  #
+  # The service is the compose service name over http, not https and not
+  # localhost. cloudflared is on the compose network and resolves `postal` there;
+  # localhost would be cloudflared's own container. Puma serves plaintext and
+  # the Cloudflare edge terminates TLS, which is why postal.web_protocol is
+  # https in config/postal.yml while this origin is http.
+  - hostname: postal.example.com
+    service: http://postal:5000
+    originRequest:
+      connectTimeout: 30s
+      # TLS is terminated at the edge, so there is nothing to verify here.
+      noTLSVerify: true
+      # The origin is on the same host and the same compose network. Leaving
+      # HTTP/2 on for this hop adds a failure mode with no benefit.
+      http2Origin: false
+
+  # Required, and must be last: cloudflared rejects a configuration without a
+  # catch-all and would otherwise have undefined behaviour for any other
+  # hostname pointed at this tunnel.
+  - service: http_status:404

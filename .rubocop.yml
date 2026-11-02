@@ -177,3 +177,13 @@ Lint/UnusedMethodArgument:
 
 Style/SpecialGlobalVars:
   Enabled: false
+
+# The smoke test harness under script/smoke is a flat script which runs under a
+# plain `ruby` interpreter rather than inside Rails. Its pass/fail counters are
+# written from top level method definitions and read again at the very end of
+# the file, which is what a global variable is for in a script of this shape.
+# Wrapping the harness in a class to satisfy this cop would obscure the linear
+# sequence of requests which is the whole point of reading it.
+Style/GlobalVars:
+  Exclude:
+    - "script/smoke/**/*"

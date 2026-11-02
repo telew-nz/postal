@@ -128,6 +128,18 @@ module Postal
       end
     end
 
+    group :api do
+      boolean :enabled do
+        description "Enable the JSON management API which allows Postal to be administered over HTTP"
+        default true
+      end
+
+      integer :max_per_page do
+        description "The maximum number of records which the JSON management API will return in a single page"
+        default 250
+      end
+    end
+
     group :worker do
       integer :default_health_server_port do
         description "The default port for the worker health server to listen on"

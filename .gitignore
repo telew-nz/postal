@@ -32,8 +32,50 @@ VERSION
 BRANCH
 
 .rubocop-https*
+
+# `.env*` has no slash in it, so it matches at every level of the tree -- which
+# is what stops deploy/.env, holding the secrets, from being committed. It also
+# catches deploy/.env.example, which is not a secret and must be committed:
+# ./deploy.sh init copies it to make .env, so a fresh clone without it has
+# nothing to copy and no record of which variables exist. The negation below
+# works only because no parent directory of it is excluded.
 .env*
+!.env.example
+!deploy/.env.example
+
+# Patterns above which contain a slash are anchored to this directory, so the
+# config/ entries do not reach the equivalent paths under deploy/. These are the
+# deployment host's own copies and they are the most sensitive files here:
+# signing.key is the DKIM private key, and anything Postal signs is verifiable
+# against its public half.
+/deploy/config/signing.key
+/deploy/config/smtp.cert
+/deploy/config/smtp.key
+
+# The ACME client's state directory, written by ./deploy.sh tls. Holds the
+# account private key, every issued certificate and key, and the per-domain
+# configuration acme.sh renews from. Losing it means losing the ability to renew
+# rather than the certificates themselves, but the account key is a credential
+# and the private keys under it are the SMTP server's.
+/deploy/acme/
+
+# Rendered by ./deploy.sh init from .env, so it contains the application
+# database password in a CREATE USER statement. The MariaDB image runs this
+# directory on first initialization of an empty volume.
+/deploy/database/
+
+# ./deploy.sh backup writes one archive per run here, and each archive contains a
+# dump of every schema, config/signing.key and the whole of .env. This is the
+# single most sensitive path in the repository, and it defaults to living inside
+# the working tree, which is why it has to be named explicitly.
+/deploy/backups/
+
+# Written by ./deploy.sh upgrade and read by ./deploy.sh rollback. Records the
+# revision this host was on before the last upgrade. Per-host state, not source.
+/deploy/.upgrade-state
 
 node_modules
 yarn.lock
 
+
+sync/last-report.json

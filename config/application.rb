@@ -40,7 +40,34 @@ module Postal
     require "tracking_middleware"
     config.middleware.insert_before ActionDispatch::HostAuthorization, TrackingMiddleware
 
+    # Errors which never reach a controller — most often a routing error for a
+    # path which does not match any documented operation — are rendered as HTML
+    # by default. The management API documents a JSON error envelope for every
+    # one of its responses, so anything beneath its prefix is rendered that way
+    # instead. The web UI keeps the default behaviour.
+    require "postal/api_exceptions_app"
+    config.exceptions_app = Postal::APIExceptionsApp.new
+
     config.hosts << Postal::Config.postal.web_hostname
+
+    # Extra hostnames to accept, comma separated. Nothing sets this in a normal
+    # deployment, where the web process has no published port and traffic arrives
+    # through the tunnel already carrying postal.web_hostname.
+    #
+    # deploy/docker-compose.debug.yml sets it to 127.0.0.1,localhost. That
+    # override publishes the origin on host loopback so a fault can be separated
+    # from the tunnel, and without this the published port is useless to a
+    # browser: HostAuthorization answers 403 to Host: 127.0.0.1 before any
+    # credential is examined, which reads exactly like an authentication failure.
+    #
+    # Scoped to an explicit opt-in rather than always allowing loopback, because
+    # the allow-list is what stands between the compose network and the
+    # application, and widening it unconditionally would weaken every deployment
+    # to make one debugging convenience work.
+    ENV["POSTAL_ADDITIONAL_ALLOWED_HOSTS"].to_s.split(",").each do |host|
+      host = host.strip
+      config.hosts << host unless host.empty?
+    end
 
     unless Postal::Config.logging.rails_log_enabled?
       config.logger = Logger.new("/dev/null")

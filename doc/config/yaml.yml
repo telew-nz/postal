@@ -44,6 +44,12 @@ web_server:
   # The maximum number of threads which can be used by the web server
   max_threads: 5
 
+api:
+  # Enable the JSON management API which allows Postal to be administered over HTTP
+  enabled: true
+  # The maximum number of records which the JSON management API will return in a single page
+  max_per_page: 250
+
 worker:
   # The default port for the worker health server to listen on
   default_health_server_port: 9090

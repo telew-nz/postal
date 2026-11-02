@@ -1,0 +1,212 @@
+# End-to-end smoke test and OpenAPI contract validation for the management API.
+#
+# This is deliberately separate from docker-compose.yaml, which is used to run
+# the RSpec suite. The services here boot a real Puma server in production mode
+# and talk to it over a real TCP socket, which the request specs cannot do.
+#
+# Driven by script/smoke/run.ps1. To run the stages by hand:
+#
+#   docker build --target ci -t postal-smoke:local .
+#   $env:POSTAL_IMAGE = "postal-smoke:local"
+#   docker compose -f docker-compose.smoke.yml up -d --wait mariadb
+#   docker compose -f docker-compose.smoke.yml run --rm init
+#   docker compose -f docker-compose.smoke.yml up -d postal
+#   docker compose -f docker-compose.smoke.yml run --rm smoke
+#   docker compose -f docker-compose.smoke.yml run --rm contract
+#   docker compose -f docker-compose.smoke.yml down -v
+#
+# The normalize step in each command exists because a Windows checkout with
+# core.autocrlf=true gives every file CRLF line endings, which breaks the
+# shebang in the binstubs under bin/. It is a no-op on a Linux checkout.
+
+# Files which are handed to the smoke and contract stages by the init stage.
+volumes:
+  smoke-shared:
+
+x-postal-env: &postal-env
+  RAILS_ENVIRONMENT: production
+  # docker/ci-config holds no postal.yml, so Postal::Config.rails.secret_key
+  # would be nil and config/initializers/secret_key.rb would fall back to a
+  # random key per container. This stack is throwaway and only exercises the
+  # API, so nothing depends on it, but the name has to be RAILS_SECRET_KEY for
+  # the value to be read at all.
+  RAILS_SECRET_KEY: smoke-test-only-not-a-real-secret-key-base-0000000000
+  # config/application.rb adds Postal::Config.postal.web_hostname to
+  # config.hosts, so ActionDispatch::HostAuthorization answers every request
+  # whose Host header does not match it with 403. The other services reach this
+  # one by its compose service name, so that is the hostname to allow.
+  POSTAL_WEB_HOSTNAME: postal
+  BIND_ADDRESS: 0.0.0.0
+  PORT: "5000"
+  MAIN_DB_HOST: mariadb
+  MAIN_DB_USERNAME: root
+  MESSAGE_DB_HOST: mariadb
+  MESSAGE_DB_USERNAME: root
+  POSTAL_SIGNING_KEY_PATH: /config/signing.key
+  LOGGING_ENABLED: "false"
+  RAILS_LOG_ENABLED: "true"
+  # The API is behind no proxy here, so the web server must not reject the
+  # plain HTTP requests the smoke test sends.
+  WEB_SERVER_DEFAULT_BIND_ADDRESS: 0.0.0.0
+
+services:
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_DATABASE: postal
+      MARIADB_ALLOW_EMPTY_PASSWORD: "yes"
+      MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "yes"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 90
+      start_period: 10s
+
+  # Loads the schema, then seeds the dataset the smoke test needs and publishes
+  # the generated API token to the shared volume.
+  init:
+    image: ${POSTAL_IMAGE:-postal-smoke:local}
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    # The image runs as the unprivileged 'postal' user, which cannot write to a
+    # freshly created named volume. This stack is throwaway so root is fine.
+    user: root
+    environment:
+      <<: *postal-env
+    volumes:
+      - "./docker/ci-config:/config"
+      - "smoke-shared:/shared"
+    command:
+      - |
+        set -euo pipefail
+        cd /opt/postal/app
+        find . -type f \( -name '*.rb' -o -name '*.rake' -o -name '*.ru' -o -name '*.yml' -o -name '*.yaml' -o -name '*.erb' -o -name '*.haml' -o -name '*.sh' -o -name 'Gemfile' -o -name 'Rakefile' \) -not -path './.git/*' -exec sed -i 's/\r//g' {} +
+        sed -i 's/\r//g' bin/*
+        echo "== creating databases =="
+        bundle exec rake db:create
+        echo "== loading schema =="
+        bundle exec rake postal:update
+        echo "== seeding =="
+        bundle exec rails runner script/smoke/seed.rb | tee /shared/seed.log | grep '^SMOKE_SEED ' | cut -d' ' -f2- > /shared/seed.json
+        test -s /shared/seed.json || { echo "seed produced no output"; cat /shared/seed.log; exit 1; }
+        echo "== seed complete =="
+
+  # The application under test.
+  postal:
+    image: ${POSTAL_IMAGE:-postal-smoke:local}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/bash", "-c"]
+    environment:
+      <<: *postal-env
+    volumes:
+      - "./docker/ci-config:/config"
+    ports:
+      - "5000"
+    command:
+      - |
+        set -euo pipefail
+        cd /opt/postal/app
+        find . -type f \( -name '*.rb' -o -name '*.rake' -o -name '*.ru' -o -name '*.yml' -o -name '*.yaml' -o -name '*.erb' -o -name '*.haml' -o -name '*.sh' -o -name 'Gemfile' -o -name 'Rakefile' \) -not -path './.git/*' -exec sed -i 's/\r//g' {} +
+        sed -i 's/\r//g' bin/*
+        exec bundle exec puma -C config/puma.rb
+
+  # Drives the API over HTTP and records every response.
+  smoke:
+    image: ${POSTAL_IMAGE:-postal-smoke:local}
+    depends_on:
+      postal:
+        condition: service_started
+    entrypoint: ["/bin/bash", "-c"]
+    user: root
+    environment:
+      <<: *postal-env
+      POSTAL_URL: http://postal:5000
+      SMOKE_RECORDINGS: /shared/recordings.jsonl
+    volumes:
+      - "./docker/ci-config:/config"
+      - "smoke-shared:/shared"
+    command:
+      - |
+        set -euo pipefail
+        cd /opt/postal/app
+        find . -type f \( -name '*.rb' -o -name '*.rake' -o -name '*.ru' -o -name '*.yml' -o -name '*.yaml' -o -name '*.erb' -o -name '*.haml' -o -name '*.sh' -o -name 'Gemfile' -o -name 'Rakefile' \) -not -path './.git/*' -exec sed -i 's/\r//g' {} +
+        sed -i 's/\r//g' bin/*
+        # The seed publishes everything the runner needs to address the dataset
+        # it just created. Exporting it as a mapping keeps this readable as the
+        # list grows.
+        eval "$$(ruby -rjson -e '
+          seed = JSON.parse(File.read("/shared/seed.json"))
+          {
+            "POSTAL_TOKEN" => "token",
+            "ORG_PERMALINK" => "organization_permalink",
+            "SERVER_PERMALINK" => "server_permalink",
+            "SENT_MESSAGE_ID" => "sent_message_id",
+            "HELD_MESSAGE_ID" => "held_message_id",
+            "QUEUED_MESSAGE_ID" => "queued_message_id"
+          }.each { |variable, key| puts "export #{variable}=#{seed.fetch(key)}" }
+        ')"
+        ruby script/smoke/run.rb
+
+  # Validates the API against its own OpenAPI document: a property-based fuzz
+  # run with Schemathesis, then a deterministic schema check of everything the
+  # smoke stage recorded.
+  contract:
+    image: schemathesis/schemathesis:stable
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postal:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    environment:
+      POSTAL_URL: http://postal:5000
+      RECORDINGS: /shared/recordings.jsonl
+      # Set to 0 to skip the Schemathesis fuzz run and only check the
+      # recordings, which is the deterministic half of this stage.
+      SCHEMATHESIS_ENABLED: "1"
+      SCHEMATHESIS_MAX_TIME: "180"
+    volumes:
+      - "smoke-shared:/shared"
+      - "./script/smoke:/smoke:ro"
+      - "./doc/api:/spec:ro"
+    command:
+      - |
+        set -u
+        STATUS=0
+        TOKEN=$$(python3 -c 'import json;print(json.load(open("/shared/seed.json"))["token"])')
+        if [ "$$SCHEMATHESIS_ENABLED" = "1" ]; then
+          echo "== schemathesis: GET coverage against the live API =="
+          # QUERY is excluded because Schemathesis probes the RFC 9592 QUERY
+          # method alongside every GET, and Rails answers it with 501 Not
+          # Implemented. That is the correct response for a method the server
+          # does not implement, but not_a_server_error flags any 5xx, so all 44
+          # of the failures it reported before this was added were that one
+          # false positive.
+          #
+          # Schemathesis ends the run with an "Unmatched filters" warning for
+          # this flag. That is expected and not a reason to remove it: the
+          # warning means no *documented operation* is called QUERY, which is
+          # true, and says nothing about the generated probes it suppresses.
+          schemathesis run \
+            --url "$$POSTAL_URL" \
+            --header "X-Postal-API-Key: $$TOKEN" \
+            --include-method GET \
+            --exclude-method QUERY \
+            --phases coverage \
+            --checks not_a_server_error,status_code_conformance,response_schema_conformance,content_type_conformance \
+            --max-time "$$SCHEMATHESIS_MAX_TIME" \
+            --max-examples 8 \
+            --seed 20260923 \
+            --generation-deterministic \
+            /spec/openapi.yaml || STATUS=1
+        fi
+        echo
+        echo "== contract: recorded responses against their declared schemas =="
+        python3 /smoke/validate_contract.py --spec-url "$$POSTAL_URL/api/v2/spec" --recordings "$$RECORDINGS" || STATUS=1
+        exit $$STATUS
