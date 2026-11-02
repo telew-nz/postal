@@ -44,12 +44,20 @@ cf_cmd() {
   done
 
   case $sub in
-    provision|dns|tunnel|status|zone) ;;
+    provision|dns|tunnel|status|zone|keys) ;;
     *) die "cloudflare: unknown subcommand '$sub'" ;;
   esac
 
   require_cmd curl
   load_env
+
+  # `keys` only needs the token itself, not the install hostnames.
+  if [[ $sub == keys ]]; then
+    need_env CLOUDFLARE_API_TOKEN
+    cf_keys_cmd "$dry" "${rest[@]}"
+    return 0
+  fi
+
   need_env CLOUDFLARE_API_TOKEN POSTAL_WEB_HOSTNAME POSTAL_SMTP_HOSTNAME \
            DNS_MX_RECORDS DNS_SPF_INCLUDE DNS_RETURN_PATH_DOMAIN \
            DNS_ROUTE_DOMAIN DNS_TRACK_DOMAIN DNS_HELO_HOSTNAME
@@ -498,9 +506,36 @@ cf_zone_status() {
   fi
 }
 
+# Copy the unified API token into the other Cloudflare key field
+# (CLOUDFLARE_DNS_API_TOKEN) so one token can drive everything. The unified
+# token carries Zone:DNS:Edit, which is all the DNS field is used for.
+cf_keys_cmd() {
+  local dry=$1 force=false; shift
+  while (($#)); do
+    case $1 in
+      --force) force=true; shift ;;
+      -h|--help) cf_usage; return 0 ;;
+      *) die "cloudflare keys: unknown option '$1'" ;;
+    esac
+  done
+
+  local current
+  current="$(env_get CLOUDFLARE_DNS_API_TOKEN)"
+  if [[ -n $current && $force != true ]]; then
+    ok "CLOUDFLARE_DNS_API_TOKEN is already set; use --force to overwrite it"
+    return 0
+  fi
+  if [[ $dry == true ]]; then
+    log "  [dry-run] would set CLOUDFLARE_DNS_API_TOKEN = CLOUDFLARE_API_TOKEN"
+    return 0
+  fi
+  env_set CLOUDFLARE_DNS_API_TOKEN "$CLOUDFLARE_API_TOKEN"
+  ok "CLOUDFLARE_DNS_API_TOKEN copied from CLOUDFLARE_API_TOKEN"
+}
+
 cf_usage() {
   cat <<'USAGE'
-Usage: ./deploy.sh cloudflare [provision|dns|tunnel|status|zone ...] [--dry-run]
+Usage: ./deploy.sh cloudflare [provision|dns|tunnel|status|zone|keys ...] [--dry-run]
 
 Provision Cloudflare for this installation via the API.
 
@@ -513,6 +548,10 @@ Provision Cloudflare for this installation via the API.
               for activation (NS verification).
   zone status <domain>
               Show a zone's status and nameservers.
+  keys [--force]
+              Copy CLOUDFLARE_API_TOKEN into CLOUDFLARE_DNS_API_TOKEN so one
+              token drives provisioning and TLS issuance. No-op if it is already
+              set unless --force is given.
   --dry-run   Print what would be done without calling the API.
 
 Requires in .env: CLOUDFLARE_API_TOKEN. For the installation commands it needs
