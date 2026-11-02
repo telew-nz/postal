@@ -77,3 +77,5 @@ BRANCH
 node_modules
 yarn.lock
 
+
+sync/last-report.json

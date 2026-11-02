@@ -1,0 +1,108 @@
+name: Upstream sync
+
+# Drives the sync/upstream branch flow against the canonical upstream
+# (postalserver/postal). Humans can trigger it from the Actions tab; the
+# optional schedule keeps the sync branch from drifting far.
+#
+# The actual git mechanics live in script/upstream-sync.sh, and PR bodies in
+# script/upstream-sync-pr.sh. This workflow is a thin harness: it runs those
+# scripts, surfaces the report, and opens a PR when the result is safe. It
+# never merges into `main` itself.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream-ref:
+        description: Upstream ref to sync (branch or tag)
+        required: false
+        default: main
+      auto-pr:
+        description: Open a PR automatically when the sync is clean/safe
+        required: false
+        default: true
+        type: boolean
+  schedule:
+    # Weekly, Monday 03:00 UTC. Set to empty (cron: '') to disable.
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  SYNC_BRANCH: sync/upstream
+  FORK_MAIN: main
+  UPSTREAM_REMOTE: upstream
+  UPSTREAM_REF: ${{ inputs.upstream-ref || 'main' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/postalserver/postal.git || git remote set-url upstream https://github.com/postalserver/postal.git
+          git fetch --tags upstream "$UPSTREAM_REF" || true
+
+      - name: Run sync orchestrator (prepare)
+        id: sync
+        run: |
+          set +e
+          script/upstream-sync.sh prepare
+          rc=$?
+          set -e
+          echo "sync_rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sync report
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-sync-report
+          path: sync/last-report.json
+          if-no-files-found: error
+
+      - name: Summarize outcome
+        id: summary
+        run: |
+          STATUS=$(grep -o '"status": *"[^"]*"' sync/last-report.json | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          HUMAN=$(grep -o '"requires_human": *\(true\|false\)' sync/last-report.json | head -1 | sed 's/.*: *\(.*\)/\1/')
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "requires_human=$HUMAN" >> "$GITHUB_OUTPUT"
+
+      - name: Commit autofixes (finish)
+        if: steps.sync.outputs.sync_rc == '0'
+        run: |
+          script/upstream-sync.sh finish --yes
+
+      - name: Push sync branch
+        run: |
+          git push origin "${SYNC_BRANCH}" || git push origin "${SYNC_BRANCH}" --force-with-lease
+
+      - name: Open / update sync PR (clean or safely resolved)
+        if: steps.sync.outputs.sync_rc == '0' && inputs.auto-pr != false
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash script/upstream-sync-pr.sh \
+            "${{ steps.summary.outputs.status }}" \
+            "${SYNC_BRANCH}" \
+            sync/last-report.json \
+            "${{ steps.summary.outputs.requires_human }}"
+
+      - name: Mark halted sync (draft PR)
+        if: steps.sync.outputs.sync_rc != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash script/upstream-sync-pr.sh halted "${SYNC_BRANCH}" sync/last-report.json true
+          echo "Sync halted; see the report artifact and the draft PR."
+          exit 1
