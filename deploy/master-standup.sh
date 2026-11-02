@@ -134,12 +134,13 @@ fi
 # Copy the unified API token into the DNS key field so tls can use the same key.
 run ./deploy.sh cloudflare keys || true
 
-# DNS records + tunnel + web hostname. This also writes the real connector
-# token to CLOUDFLARE_TUNNEL_TOKEN.
-run ./deploy.sh cloudflare provision
-
+# Build first (the image is needed by the bootstrap container for the DKIM
+# derivation inside provision), then migrate (which starts and health-checks
+# mariadb), then provision so it can resolve the DKIM record and write the
+# tunnel token before up.
 run ./deploy.sh build
 run ./deploy.sh migrate
+run ./deploy.sh cloudflare provision
 run ./deploy.sh up
 run ./deploy.sh admin
 run ./deploy.sh doctor

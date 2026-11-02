@@ -155,59 +155,46 @@ cf_account_id() {
   [[ -n ${CF_ACCOUNT_ID:-} ]] || die "could not determine the Cloudflare account id; set CLOUDFLARE_ACCOUNT_ID in .env"
 }
 
-# List DNS records for a type+name. One line per record:
-#   id<TAB>type<TAB>name<TAB>content<TAB>proxied
-cf_list_records() {
+# Return the id of the first DNS record matching a type+name, or empty.
+#
+# The Cloudflare record objects contain nested objects (notably `meta`), so a
+# flat, brace-free split of the result array misses records and the code would
+# try to re-create them (HTTP 400 "An identical record already exists"). The
+# anchored pattern below only needs the start of the result array, so nested
+# objects cannot hide the record.
+cf_record_id() {
   local zone=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
   local type=$1 name=$2
-  cf_call GET "/zones/${zone}/dns_records?type=${type}&name=$(cf_urlencode "$name")&per_page=50"
-  [[ $CF_HTTP == 2* ]] || return 0
-  printf '%s' "$CF_BODY" |
-    sed 's/},{/}\n{/g' |
-    { grep -o '{[^{}]*"id":"[^"]*"[^{}]*}' || true; } |
-    while read -r r; do
-      local id rtype rname content proxied
-      id="$(printf '%s' "$r" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
-      rtype="$(printf '%s' "$r" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
-      rname="$(printf '%s' "$r" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
-      content="$(printf '%s' "$r" | sed -n 's/.*"content":"\([^"]*\)".*/\1/p')"
-      proxied="$(printf '%s' "$r" | sed -n 's/.*"proxied":\(true\|false\).*/\1/p')"
-      [[ -n $id ]] || continue
-      printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$rtype" "$rname" "$content" "$proxied"
-    done
+  cf_call GET "/zones/${zone}/dns_records?type=${type}&name=$(cf_urlencode "$name")&per_page=1"
+  [[ $CF_HTTP == 2* ]] || return 1
+  printf '%s' "$CF_BODY" | sed -n 's/.*"result":\[{"id":"\([^"]*\)".*/\1/p'
 }
 
-# Create or update one DNS record. Returns 0 on create/update, 1 on dry-run.
+# Create or update one DNS record. Updates are opportunistic (always write the
+# desired values) so repeated runs converge instead of colliding with the
+# pre-existing record.
 cf_upsert_record() {
   local dry=$1 type=$2 name=$3 content=$4 proxied=$5
   local zone=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
+
+  local data
+  data="{\"type\":\"${type}\",\"name\":\"${name}\",\"content\":\"${content}\",\"proxied\":${proxied},\"ttl\":1}"
 
   if [[ $dry == true ]]; then
     log "  [dry-run] dns_records: $type $name -> $content"
     return 0
   fi
 
-  local existing
-  existing="$(cf_list_records "$type" "$name")"
-
-  local data
-  data="{\"type\":\"${type}\",\"name\":\"${name}\",\"content\":\"${content}\",\"proxied\":${proxied},\"ttl\":1}"
-
-  if [[ -z $existing ]]; then
+  local id
+  id="$(cf_record_id "$type" "$name")"
+  if [[ -z $id ]]; then
     cf_call POST "/zones/${zone}/dns_records" "$data"
     cf_require_success "create $type $name" "$CF_HTTP" "$CF_BODY"
     ok "dns_records: created $type $name"
   else
-    local id cur cur_content
-    id="$(printf '%s' "$existing" | head -n1 | cut -f1)"
-    cur_content="$(printf '%s' "$existing" | head -n1 | cut -f4)"
-    if [[ "$cur_content" != "$content" ]]; then
-      cf_call PUT "/zones/${zone}/dns_records/${id}" "$data"
-      cf_require_success "update $type $name" "$CF_HTTP" "$CF_BODY"
-      ok "dns_records: updated $type $name"
-    else
-      ok "dns_records: $type $name unchanged"
-    fi
+    cf_call PUT "/zones/${zone}/dns_records/${id}" "$data"
+    cf_require_success "update $type $name" "$CF_HTTP" "$CF_BODY"
+    ok "dns_records: updated $type $name"
   fi
 }
 
@@ -392,10 +379,10 @@ cf_status() {
   echo "  account:   $CF_ACCOUNT_ID"
   if cf_tunnel_find; then
     echo "  tunnel:    $CLOUDFLARE_TUNNEL_NAME ($CF_TUNNEL_ID)"
-    local existing
-    existing="$(cf_list_records CNAME "$POSTAL_WEB_HOSTNAME")"
-    if [[ -n $existing ]]; then
-      echo "  web CNAME: $(printf '%s' "$existing" | head -n1 | cut -f4)"
+    local wid
+    wid="$(cf_record_id CNAME "$POSTAL_WEB_HOSTNAME")"
+    if [[ -n $wid ]]; then
+      echo "  web CNAME: present ($wid)"
     else
       echo "  web CNAME: none"
     fi
