@@ -324,6 +324,12 @@ cf_tunnel_token() {
   local token
   token="$(printf '%s' "$CF_BODY" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')"
   [[ -n $token ]] || die "tunnel token endpoint returned no token"
+  # The connector token is never the API token. Writing the API token here is
+  # the exact misconfiguration that makes cloudflared restart-loop with
+  # "Provided Tunnel token is not valid", so refuse it outright.
+  if [[ $token == "$CLOUDFLARE_API_TOKEN" ]]; then
+    die "the tunnel token endpoint returned the API token itself, which is never a valid connector token. Refusing to write it."
+  fi
   if [[ "$(env_get CLOUDFLARE_TUNNEL_TOKEN)" != "$token" ]]; then
     env_set CLOUDFLARE_TUNNEL_TOKEN "$token"
     ok "wrote CLOUDFLARE_TUNNEL_TOKEN to .env"
@@ -354,6 +360,12 @@ cf_tunnel_apply() {
   local dry=$1
   step "Cloudflare tunnel"
   cf_zone_ready
+  local cur
+  cur="$(env_get CLOUDFLARE_TUNNEL_TOKEN)"
+  if [[ -n $cur && $cur == "$CLOUDFLARE_API_TOKEN" ]]; then
+    warn "CLOUDFLARE_TUNNEL_TOKEN is set to the API token, which is invalid."
+    warn "It will be replaced by the tunnel's real connector token."
+  fi
   cf_tunnel_ensure "$dry"
   cf_tunnel_token "$dry"
   cf_tunnel_web_cname "$dry"
