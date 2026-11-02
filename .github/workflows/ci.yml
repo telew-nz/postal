@@ -101,7 +101,9 @@ jobs:
           if [[ "$REF" == "main" ]]; then
             echo "${IMAGE}:latest" >> "$GITHUB_OUTPUT"
           else
-            echo "${IMAGE}:branch-${REF}" >> "$GITHUB_OUTPUT"
+            # Branch names may contain slashes (e.g. sync/upstream), which are
+            # invalid in a container tag; normalize them.
+            echo "${IMAGE}:branch-${REF//\//-}" >> "$GITHUB_OUTPUT"
           fi
           echo 'EOF' >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v4
