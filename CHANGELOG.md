@@ -2,6 +2,64 @@
 
 This file contains all the latest changes and updates to Postal.
 
+## [3.4.0](https://github.com/telew-nz/postal/compare/3.3.7...3.4.0) (2026-11-02)
+
+
+### Features
+
+* add configurable Postal logger level defaulting to INFO ([#3626](https://github.com/telew-nz/postal/issues/3626)) ([ced77a3](https://github.com/telew-nz/postal/commit/ced77a3860c23779889aec8dacd2642f20d10cea))
+* **api:** JSON management API under /api/v2 ([6cfe273](https://github.com/telew-nz/postal/commit/6cfe273b07799358a89c7f8bec844a5e2530624f))
+* **app:** accept additional hostnames via POSTAL_ADDITIONAL_ALLOWED_HOSTS ([d1c934f](https://github.com/telew-nz/postal/commit/d1c934f3252c8ad3d412591a847334482a9a1aba))
+* **deploy:** \cloudflare keys\ copies the unified API token to the DNS key field ([d78b5c2](https://github.com/telew-nz/postal/commit/d78b5c2ff67c8750c48db9a7ac4204601bda08ad))
+* **deploy:** add \cloudflare zone add|status\ for client domain onboarding ([5365813](https://github.com/telew-nz/postal/commit/53658137fabc8fef6932890e390435e6cb523fd0))
+* **deploy:** add \cloudflare\ command to provision DNS + tunnel via the API ([9d44490](https://github.com/telew-nz/postal/commit/9d444905939253a3b381dae8311a21e3e1f8f0d1))
+* **deploy:** add master-destroy and master-standup scripts ([23815d2](https://github.com/telew-nz/postal/commit/23815d2a7104d137b79e6bea1254e1f14f7096fc))
+* **deploy:** cold-start prechecks in master-standup (--cold) ([a30bcde](https://github.com/telew-nz/postal/commit/a30bcde003ccf03a04c20d3387fc42cf30f1ee5e))
+* **deploy:** Let's Encrypt TLS for inbound SMTP ([35e1627](https://github.com/telew-nz/postal/commit/35e1627c9bac61c40c9dc4975ea7e54d34dba27c))
+* **deploy:** production deployment bundle ([d19cf25](https://github.com/telew-nz/postal/commit/d19cf2560c60373c0822f76a8bfefdadfa528495))
+* **deploy:** tls --wildcard issuance and tls import for existing certificates ([81e5065](https://github.com/telew-nz/postal/commit/81e5065ed073450b16c21537ce71cbbd3ca1339d))
+* **dkim:** make key size configurable and allow keys to be rotated ([d96eddb](https://github.com/telew-nz/postal/commit/d96eddbadeda600595d6247486f9ceb8e99cbc15))
+* **sync:** add upstream sync flow with conflict-tiering ([9be72fb](https://github.com/telew-nz/postal/commit/9be72fb68c9c588665d7f7e3dd9cbaf1cf054eba))
+
+
+### Bug Fixes
+
+* **deploy:** anchor DNS record lookup against nested meta; reorder standup so provision runs after build/migrate ([58594eb](https://github.com/telew-nz/postal/commit/58594eba6fa4942c62aba27451fb089e6157f633))
+* **deploy:** correct defects surfaced by the first live rehearsal ([8f37733](https://github.com/telew-nz/postal/commit/8f377332383a1b0d367dd1657009c94d86c65dcc))
+* **deploy:** find existing tunnel despite nested objects in the list response ([23e430d](https://github.com/telew-nz/postal/commit/23e430d27076e73170dcb266ba0c08d4f2070594))
+* **deploy:** reconcile app database grants at migrate time instead of relying on one-shot initdb.d ([961ac88](https://github.com/telew-nz/postal/commit/961ac88581044b60123581d17c40ac70f10e8348))
+* **deploy:** refuse to write the API token as the tunnel connector token ([7bbd61c](https://github.com/telew-nz/postal/commit/7bbd61c1513120f87e77a0448f60a9ace2ec8044))
+* **deploy:** reload .env after generating secrets in init ([a6d3c3d](https://github.com/telew-nz/postal/commit/a6d3c3d16191bff20f495892ff004f516021df48))
+* **deploy:** send MX priority as a separate Cloudflare field ([212ec7d](https://github.com/telew-nz/postal/commit/212ec7d82472fee10d6a520f236ace40e3b2a34a))
+* **deploy:** start mariadb before reconciling grants so migrate works from a cold start ([30fd7c6](https://github.com/telew-nz/postal/commit/30fd7c60a86d4c7cefef0d21f5dd3992b81da152))
+* **deploy:** surface Cloudflare API errors in zone lookup instead of reporting 'not found' ([5f71337](https://github.com/telew-nz/postal/commit/5f713371b9b529309ccbd876f5f5cad1d89a4669))
+* **deploy:** tolerant tunnel-id extraction with by-name fallback ([0ea54e9](https://github.com/telew-nz/postal/commit/0ea54e9115ec6eafe1caaba6014971c87af6df73))
+* **deploy:** tolerate already-removed volumes in cold-start precheck ([a1c076f](https://github.com/telew-nz/postal/commit/a1c076f0ddc083e032ae09dfd67ba50be4c9eb4e))
+* **deploy:** tunnel ingress connectTimeout as integer seconds ([ba2a16b](https://github.com/telew-nz/postal/commit/ba2a16b02aee5b41cae6b1367861f6ba69fb841a))
+* give each worker process a unique locker identity ([#3628](https://github.com/telew-nz/postal/issues/3628)) ([3be663d](https://github.com/telew-nz/postal/commit/3be663dc8931bd731516bafd6edff6b0fbd03df2))
+
+
+### Documentation
+
+* **api:** OpenAPI document and configuration reference ([f324dca](https://github.com/telew-nz/postal/commit/f324dca83a97004354771448a9b886dde44326da))
+
+
+### Miscellaneous Chores
+
+* local verification harness for Windows checkouts ([463d5ac](https://github.com/telew-nz/postal/commit/463d5acb10cc928f574ecdda683eb5d5f0302067))
+* pin line endings for binstubs and shell scripts ([6e5329a](https://github.com/telew-nz/postal/commit/6e5329a6c9a536d014a875f94bb634bf9f4abbb2))
+
+
+### Tests
+
+* **api:** request specs, factories and helpers ([206853d](https://github.com/telew-nz/postal/commit/206853d53fdda504d255fd0652fc3e4f56971ba5))
+
+
+### Continuous Integration
+
+* sanitize branch names in image tags (sync/upstream) ([755b93c](https://github.com/telew-nz/postal/commit/755b93c0e8f7b2946bafff918eb62a424badfb6a))
+* target fork ghcr.io namespace instead of upstream package ([df4a688](https://github.com/telew-nz/postal/commit/df4a68863000cdb121136e23a4cea88e0916bdce))
+
 ## [3.3.7](https://github.com/postalserver/postal/compare/3.3.6...3.3.7) (2026-06-03)
 
 
