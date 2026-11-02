@@ -26,11 +26,15 @@ init_cmd() {
   step "Preparing $DEPLOY_DIR"
 
   init_env_file
-  # load_env also decides the worker profile, but at this point the values it
-  # reads may be the ones this function just generated.
   load_env
   init_secrets "$force_secrets"
+  # env_set writes to the .env file but does not export into this shell, so
+  # the values just generated are not visible yet. Reload before anything
+  # relies on them.
+  load_env
   init_site_values "$domain"
+  # Prompted values were also written to .env; reload so they are visible too.
+  load_env
   init_signing_key
   init_database_grants
 
