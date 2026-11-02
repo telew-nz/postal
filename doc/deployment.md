@@ -746,6 +746,9 @@ path and clone source.
 the site values and `CLOUDFLARE_API_TOKEN` (`init` fills the remaining secrets;
 `cloudflare keys` copies the unified key to the DNS field). Pass `--domain
 example.com` to derive the `dns.*` names. Any failing step stops the run.
+`--cold` runs a precheck first that detects and removes any stale postal
+containers and volumes (including the MariaDB volume) before standing up fresh;
+`--yes` skips its confirmation prompt.
 
 These are convenience tools for an operator on the host; they are not part of
 the `./deploy.sh` command surface.
