@@ -99,6 +99,8 @@ ActiveRecord::Schema[7.0].define(version: 2026_09_23_120000) do
     t.integer "owner_id"
     t.string "dkim_identifier_string"
     t.boolean "use_for_any"
+    t.text "pending_dkim_private_key"
+    t.string "pending_dkim_identifier_string"
     t.index ["server_id"], name: "index_domains_on_server_id"
     t.index ["uuid"], name: "index_domains_on_uuid", length: 8
   end
