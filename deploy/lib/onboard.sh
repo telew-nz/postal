@@ -145,7 +145,7 @@ onboard_cmd() {
     done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
     if [[ -z $http_uuid ]]; then
       api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/http_endpoints" \
-        "{\"name\":\"default-webhook\",\"url\":\"$POSTAL_DEFAULT_ROUTE_ENDPOINT\"}"
+        "{\"name\":\"default-webhook\",\"url\":\"$POSTAL_DEFAULT_ROUTE_ENDPOINT\",\"encoding\":\"BodyAsJSON\",\"format\":\"Hash\"}"
       [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create http endpoint -> $API_STATUS ($API_BODY)"
       http_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
     fi

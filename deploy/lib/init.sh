@@ -178,6 +178,7 @@ init_apply_domain() {
   _init_default DNS_TRACK_DOMAIN "track.${domain}"
   _init_default DNS_HELO_HOSTNAME "$smtp_host"
   _init_default POSTAL_SMTP_HOSTNAME "$smtp_host"
+  _init_default POSTAL_DEFAULT_ROUTE_ENDPOINT "https://v2.telew.nz/api/v1/webhooks/email/events"
 }
 
 _init_default() {
