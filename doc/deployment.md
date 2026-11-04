@@ -762,6 +762,19 @@ containers and volumes (including the MariaDB volume) before standing up fresh;
 These are convenience tools for an operator on the host; they are not part of
 the `./deploy.sh` command surface.
 
+## Client onboarding
+
+`./deploy.sh onboard --domain client.com [--org NAME] [--server-name NAME]
+[--test-to you@example.com] [--no-test]` automates the whole flow for a
+client domain: it ensures the organization and mail server, creates the domain
+under the server, publishes and verifies its DNS records in Cloudflare, creates
+an address endpoint (`receive@<domain>`) and a route to it, creates an API
+credential, optionally sends an outbound test and an inbound loopback, then
+prints a summary including the API credential key (use it as
+`X-Server-API-Key` for the legacy send API). It is idempotent — existing pieces
+are reused, not duplicated. Requires `POSTAL_API_TOKEN`, `CLOUDFLARE_API_TOKEN`
+and `POSTAL_WEB_HOSTNAME` in `.env`.
+
 ## Outbound IP pools
 
 Off by default, and enabling it is not just a flag.

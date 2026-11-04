@@ -44,6 +44,7 @@ main() {
     cloudflare) cf_cmd "$@" ;;
     tls)       tls_cmd "$@" ;;
     doctor)    doctor_cmd "$@" ;;
+    onboard)   onboard_cmd "$@" ;;
 
     # Data
     backup)    backup_cmd "$@" ;;
@@ -102,6 +103,8 @@ Setup, in the order a new installation needs them
                                 tunnel and the web hostname route via the API.
   tls issue|renew|status        A Let's Encrypt certificate for inbound SMTP,
                                 validated by DNS-01 through the Cloudflare API.
+  onboard --domain client.com    Automate the full client-onboarding flow and
+                                print the delivered API key.
   doctor                        Verify the deployment by observing it.
 
 Operating

@@ -61,6 +61,8 @@ unset _self _link
 . "$LIB_DIR/cloudflare.sh"
 # shellcheck source=lib/tls.sh
 . "$LIB_DIR/tls.sh"
+# shellcheck source=lib/onboard.sh
+. "$LIB_DIR/onboard.sh"
 # shellcheck source=lib/doctor.sh
 . "$LIB_DIR/doctor.sh"
 # shellcheck source=lib/backup.sh
