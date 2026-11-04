@@ -199,6 +199,18 @@ else
     ok: Array(rp_mx).any? { |r| r.downcase.include?(expected[:smtp_hostname].to_s.downcase) }
   })
 
+  # SPF must also exist on the return-path domain itself: the envelope sender is
+  # <local>@<return-path domain>, so SPF is checked against that name. Without
+  # it SPF is NONE and DMARC fails even when DKIM passes.
+  rp_spf = resolve(dns, config.dns.return_path_domain, Resolv::DNS::Resource::IN::TXT)
+  emit("#{MARKER}_DNS", {
+    check: "return_path_spf",
+    name: config.dns.return_path_domain,
+    expected: "v=spf1",
+    actual: Array(rp_spf).join(" | ")[0, 120],
+    ok: Array(rp_spf).any? { |r| r.start_with?("v=spf1") }
+  })
+
   cname = resolve(dns, config.dns.track_domain, Resolv::DNS::Resource::IN::CNAME)
   a = resolve(dns, config.dns.track_domain, Resolv::DNS::Resource::IN::A)
   emit("#{MARKER}_DNS", {

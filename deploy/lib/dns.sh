@@ -63,6 +63,10 @@ dns_cmd() {
 
   step "3. The return-path domain (bounces and DKIM)"
   dns_row MX "$DNS_RETURN_PATH_DOMAIN" "10 ${POSTAL_SMTP_HOSTNAME}"
+  # The envelope sender (MAIL FROM / Return-Path) is <local>@<return-path
+  # domain>, so SPF is checked against THAT domain. Without an SPF record here,
+  # SPF is NONE and DMARC fails even when DKIM passes.
+  dns_row TXT "$DNS_RETURN_PATH_DOMAIN" "v=spf1 mx a:${POSTAL_SMTP_HOSTNAME} ~all"
   # DKIMHeader falls back to d=dns.return_path_domain with s=dns.dkim_identifier
   # whenever a domain has no verified DKIM key of its own, which is the common
   # case. The value is the public half of config/signing.key.

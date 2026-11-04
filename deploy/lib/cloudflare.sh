@@ -246,6 +246,10 @@ cf_dns_desired() {
 
   printf 'TXT\t%s\tv=spf1 mx a:%s ~all\tfalse\n' "$DNS_SPF_INCLUDE" "$POSTAL_SMTP_HOSTNAME"
   printf 'MX\t%s\t10 %s\tfalse\n' "$DNS_RETURN_PATH_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
+  # SPF must also exist on the return-path domain itself: the envelope sender is
+  # <local>@<return-path domain>, so SPF is checked against it. Without this,
+  # SPF is NONE and DMARC fails even when DKIM passes.
+  printf 'TXT\t%s\tv=spf1 mx a:%s ~all\tfalse\n' "$DNS_RETURN_PATH_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
   printf 'MX\t%s\t10 %s\tfalse\n' "$DNS_ROUTE_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
   printf 'CNAME\t%s\t%s.\ttrue\n' "$DNS_TRACK_DOMAIN" "$POSTAL_WEB_HOSTNAME"
 
