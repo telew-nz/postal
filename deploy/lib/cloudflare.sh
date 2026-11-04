@@ -576,6 +576,15 @@ cf_domain_publish() {
     cf_upsert_record "$dry" "$type" "$name" "$value" false "$pri"
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"host"[^{}]*}' || true)"
 
+  # DMARC: the third leg of alignment. SPF + DKIM can both pass while DMARC
+  # still fails if no _dmarc record exists. The policy is configurable via
+  # DNS_DMARC_POLICY (default: p=none, safe). Start at none to gather reports,
+  # then tighten to quarantine/reject once the reports confirm no spoofing.
+  local dmarc="${DNS_DMARC_POLICY:-v=DMARC1; p=none}"
+  if [[ -n $dmarc ]]; then
+    cf_upsert_record "$dry" TXT "_dmarc.${domain}" "$dmarc" false
+  fi
+
   ok "records for $domain are published in Cloudflare"
   log "  Run ./deploy.sh doctor to confirm everything resolves."
 }

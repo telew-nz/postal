@@ -775,6 +775,12 @@ prints a summary including the API credential key (use it as
 are reused, not duplicated. Requires `POSTAL_API_TOKEN`, `CLOUDFLARE_API_TOKEN`
 and `POSTAL_WEB_HOSTNAME` in `.env`.
 
+For deliverability, the per-domain publish also writes a **DMARC** record at
+`_dmarc.<domain>` (policy from `DNS_DMARC_POLICY`, default `p=none`). SPF and
+DKIM can both pass while DMARC still fails without this record. Start at
+`p=none` to gather aggregate reports, then tighten to `p=quarantine` and
+`p=reject` once reports confirm no spoofing.
+
 ## Outbound IP pools
 
 Off by default, and enabling it is not just a flag.
