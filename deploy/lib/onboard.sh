@@ -383,6 +383,75 @@ is the clean mirror of `onboard`.
 USAGE
 }
 
+# ./deploy.sh mta-sts -- write the MTA-STS policy and enable the records.
+#
+# Enables MTA-STS for the installation's web/domain: writes the policy file at
+# config/mta-sts/.well-known/mta-sts.txt (served by the mtasts container and
+# the mta-sts.<domain> tunnel route), sets DNS_MTA_STS=true, and publishes the
+# _mta-sts TXT via the per-domain Cloudflare flow.
+
+mta_sts_cmd() {
+  local dry=false
+  while (($#)); do
+    case $1 in
+      --dry-run) dry=true; shift ;;
+      -h|--help) mta_sts_usage; return 0 ;;
+      *) die "mta-sts: unknown option '$1'" ;;
+    esac
+  done
+
+  load_env
+  need_env POSTAL_SMTP_HOSTNAME POSTAL_WEB_HOSTNAME
+
+  local spd
+  spd="$(printf '%s' "${DNS_SMTP_HOSTNAME:-$POSTAL_SMTP_HOSTNAME}" | sed 's/^mx\.//')"
+  [[ -n $spd ]] || spd="$POSTAL_SMTP_HOSTNAME"
+
+  local mx="$POSTAL_SMTP_HOSTNAME"
+  local max_age="${DNS_MTA_STS_MAX_AGE:-604800}"
+  local mode="${DNS_MTA_STS_MODE:-enforce}"
+
+  local policy_dir="$CONFIG_DIR/mta-sts/.well-known"
+  if [[ $dry == true ]]; then
+    log "  [dry-run] would write $policy_dir/mta-sts.txt"
+    log "  [dry-run] would set DNS_MTA_STS=true"
+    return 0
+  fi
+
+  mkdir -p "$policy_dir"
+  cat > "$policy_dir/mta-sts.txt" <<EOF
+version: STSv1
+mode: $mode
+mx: $mx
+max_age: $max_age
+EOF
+  ok "wrote $policy_dir/mta-sts.txt (mode $mode, mx $mx)"
+
+  env_set DNS_MTA_STS true
+  ok "DNS_MTA_STS=true in .env"
+
+  info "now create/publish the _mta-sts TXT and the mta-sts CNAME/ingress:"
+  info "  ./deploy.sh cloudflare provision   # CNAME + ingress"
+  info "  ./deploy.sh cloudflare domain ${POSTAL_WEB_HOSTNAME} --verify   # TXT"
+}
+
+mta_sts_usage() {
+  cat <<'USAGE'
+Usage: ./deploy.sh mta-sts [--dry-run]
+
+Write the MTA-STS policy file and enable MTA-STS for this installation.
+
+The policy is written to config/mta-sts/.well-known/mta-sts.txt, which is
+served by the mtasts container at https://mta-sts.<web-hostname>/.well-known/
+mta-sts.txt through the tunnel. It also sets DNS_MTA_STS=true so the tunnel
+ingress and the _mta-sts TXT are published by the cloudflare commands.
+
+Optional .env overrides:
+  DNS_MTA_STS_MODE     enforce (default) | testing | none
+  DNS_MTA_STS_MAX_AGE  policy lifetime in seconds (default 604800)
+USAGE
+}
+
 onboard_usage() {
   cat <<'USAGE'
 Usage: ./deploy.sh onboard --domain client.com [options]

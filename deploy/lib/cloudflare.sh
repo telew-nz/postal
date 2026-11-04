@@ -384,21 +384,30 @@ cf_tunnel_token() {
 cf_tunnel_web_cname() {
   local dry=$1
   cf_upsert_record "$dry" CNAME "$POSTAL_WEB_HOSTNAME" "${CF_TUNNEL_ID}.cfargotunnel.com" true
+  # MTA-STS policy host serves the mta-sts.<domain> hostname through the same
+  # tunnel; gate on the same flag that publishes the _mta-sts TXT.
+  if [[ ${DNS_MTA_STS:-false} == true ]]; then
+    cf_upsert_record "$dry" CNAME "mta-sts.${POSTAL_WEB_HOSTNAME}" "${CF_TUNNEL_ID}.cfargotunnel.com" true
+  fi
 }
 
 cf_tunnel_ingress() {
   local dry=$1
+  local ingress="{\"hostname\":\"${POSTAL_WEB_HOSTNAME}\",\"service\":\"http://postal:5000\",\"originRequest\":{\"connectTimeout\":30,\"noTLSVerify\":true,\"http2Origin\":false}}"
+  # MTA-STS policy served from the mtasts container (nginx) via the tunnel.
+  if [[ ${DNS_MTA_STS:-false} == true ]]; then
+    ingress="${ingress},{\"hostname\":\"mta-sts.${POSTAL_WEB_HOSTNAME}\",\"service\":\"http://mtasts:80\",\"originRequest\":{\"connectTimeout\":30,\"noTLSVerify\":true,\"http2Origin\":false}}"
+  fi
   local data
-  # connectTimeout must be an integer number of seconds for the Cloudflare API;
-  # the "30s" duration form is only valid in the on-disk cloudflared config.
-  data="{\"config\":{\"ingress\":[{\"hostname\":\"${POSTAL_WEB_HOSTNAME}\",\"service\":\"http://postal:5000\",\"originRequest\":{\"connectTimeout\":30,\"noTLSVerify\":true,\"http2Origin\":false}},{\"service\":\"http_status:404\"}]}}"
+  data="{\"config\":{\"ingress\":[${ingress},{\"service\":\"http_status:404\"}]}}"
   if [[ $dry == true ]]; then
-    log "  [dry-run] set tunnel ingress for $POSTAL_WEB_HOSTNAME -> http://postal:5000"
+    log "  [dry-run] set tunnel ingress for $POSTAL_WEB_HOSTNAME (and mta-sts if enabled) -> postal / mtasts"
     return 0
   fi
   cf_call PUT "/accounts/${CF_ACCOUNT_ID}/cfd_tunnel/${CF_TUNNEL_ID}/configurations" "$data"
   cf_require_success "tunnel ingress" "$CF_HTTP" "$CF_BODY"
-  ok "tunnel ingress: $POSTAL_WEB_HOSTNAME -> http://postal:5000"
+  ok "tunnel ingress set for $POSTAL_WEB_HOSTNAME -> http://postal:5000"
+  [[ ${DNS_MTA_STS:-false} == true ]] && ok "tunnel ingress set for mta-sts.$POSTAL_WEB_HOSTNAME -> http://mtasts:80"
 }
 
 cf_tunnel_apply() {

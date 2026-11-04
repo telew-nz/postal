@@ -397,6 +397,20 @@ services:
     networks:
       - postal
 
+  # Serves the MTA-STS policy (and any other static mail-policy files) for the
+  # mta-sts.<domain> hostname. The policy file lives at config/mta-sts/
+  # .well-known/mta-sts.txt and is mounted read-only. Only used when
+  # DNS_MTA_STS is enabled.
+  mtasts:
+    image: ${MTASTS_IMAGE:-nginx:alpine}
+    container_name: postal-mtasts
+    restart: unless-stopped
+    logging: *postal-logging
+    volumes:
+      - ./config/mta-sts:/usr/share/nginx/html:ro
+    networks:
+      - postal
+
   # One-shot ACME client, driven entirely by ./deploy.sh tls. With no arguments
   # the image's own default runs, which is --help, for the same reason as
   # bootstrap above: a bare `docker compose --profile tls run --rm acme` should
