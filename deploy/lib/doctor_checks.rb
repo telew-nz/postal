@@ -353,3 +353,27 @@ begin
 rescue StandardError => e
   emit("#{MARKER}_IP", { error: e.class.name, message: e.message.to_s[0, 200] })
 end
+
+# ---------------------------------------------------------------------------
+# rspamd
+
+begin
+  rspamd = Postal::Config.rspamd
+  if rspamd.enabled
+    begin
+      require "socket"
+      probe = TCPSocket.new(rspamd.host, rspamd.port)
+      probe.close
+      reachable = true
+      detail = "#{rspamd.host}:#{rspamd.port}"
+    rescue StandardError => e
+      reachable = false
+      detail = "#{rspamd.host}:#{rspamd.port} (#{e.class}: #{e.message})"
+    end
+    emit("#{MARKER}_RSPAMD", { enabled: true, reachable: reachable, detail: detail })
+  else
+    emit("#{MARKER}_RSPAMD", { enabled: false })
+  end
+rescue StandardError => e
+  emit("#{MARKER}_RSPAMD", { error: e.class.name, message: e.message.to_s[0, 200] })
+end

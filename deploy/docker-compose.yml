@@ -109,6 +109,18 @@ x-postal-env: &postal-env
   # depending on the sender, so ./deploy.sh tls sets this only after the files
   # are in place and readable.
   SMTP_SERVER_TLS_ENABLED: ${SMTP_SERVER_TLS_ENABLED:-false}
+  # rspamd spam inspection. These mirror the rspamd.* keys in config/postal.yml
+  # and the rspamd service below. When enabled, the worker POSTs each message to
+  # the rspamd container on the shared network (the default host is that service
+  # name). ./deploy.sh rspamd sets RSPAMD_ENABLED=true, starts the service, and
+  # renders the per-domain maps; the compose profile gate in common.sh uses the
+  # same flag, so the service and the app flip together.
+  RSPAMD_ENABLED: ${RSPAMD_ENABLED:-false}
+  RSPAMD_HOST: ${RSPAMD_HOST:-rspamd}
+  RSPAMD_PORT: ${RSPAMD_PORT:-11333}
+  RSPAMD_SSL: ${RSPAMD_SSL:-false}
+  RSPAMD_PASSWORD: ${RSPAMD_PASSWORD:-}
+  RSPAMD_FLAGS: ${RSPAMD_FLAGS:-}
   # Must match postal.trusted_proxies in config/postal.yml. Both are the pinned
   # subnet declared at the bottom of this file; deploy.sh doctor checks that the
   # address cloudflared actually got is inside it.
@@ -335,6 +347,26 @@ services:
     networks:
       - postal
 
+  # Spam inspection via rspamd. Enabled by RSPAMD_ENABLED=true in .env, which
+  # is forwarded through the x-postal-env anchor and overrides the committed
+  # config/postal.yml value (env beats the YAML for every rspamd.* key). The
+  # worker POSTs each message to rspamd on the shared network. Per-domain
+  # allow/block maps are rendered by `./deploy.sh rspamd` into ./config/rspamd,
+  # then bound in below. Only the generated artifacts are mounted, so the
+  # image's own /etc/rspamd config (modules, local.d defaults) stays intact and
+  # the generated fragment is picked up as just another local.d file.
+  rspamd:
+    image: ${RSPAMD_IMAGE:-rspamd/rspamd:latest}
+    profiles: ["rspamd"]
+    container_name: postal-rspamd
+    restart: unless-stopped
+    logging: *postal-logging
+    volumes:
+      - ./config/rspamd/maps:/etc/rspamd/maps:ro
+      - ./config/rspamd/local.d/multimap-generated.conf:/etc/rspamd/local.d/multimap-generated.conf:ro
+    networks:
+      - postal
+
   # Outbound-only tunnel connector. It dials Cloudflare and holds the connection
   # open, so no inbound firewall rule and no published port is needed for HTTP.
   #
@@ -394,6 +426,10 @@ services:
     volumes:
       - ./config:/config:ro
       - ./lib:/deploy-lib:ro
+      # Writable target for the rspamd renderer (maps + the generated local.d
+      # fragment). Kept separate because /config is mounted read-only; the host
+      # ./config/rspamd is what feeds the rspamd service's mounts above.
+      - ./config/rspamd:/rspamd-config
     networks:
       - postal
 

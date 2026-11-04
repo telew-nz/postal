@@ -196,6 +196,11 @@ compose() {
   if [[ -z $NO_TUNNEL ]]; then
     args+=(--profile tunnel)
   fi
+  # rspamd is a profile so a deployment which has not opted in does not build
+  # or start it; `./deploy.sh rspamd` flips RSPAMD_ENABLED and re-runs up.
+  if [[ ${RSPAMD_ENABLED:-false} == true ]]; then
+    args+=(--profile rspamd)
+  fi
 
   [[ -n ${DEPLOY_DEBUG:-} ]] && args+=(-f "$COMPOSE_DEBUG_FILE")
   docker compose "${args[@]}" "$@"

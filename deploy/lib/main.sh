@@ -47,6 +47,7 @@ main() {
     onboard)   onboard_cmd "$@" ;;
     teardown)  teardown_cmd "$@" ;;
     mta-sts)  mta_sts_cmd "$@" ;;
+    rspamd)    rspamd_cmd "$@" ;;
 
     # Data
     backup)    backup_cmd "$@" ;;
@@ -110,6 +111,7 @@ Setup, in the order a new installation needs them
   teardown --domain client.com   Cleanly remove the domain, its Cloudflare DNS
                                 records, and optionally the server/org.
   mta-sts                       Write the MTA-STS policy and enable it.
+  rspamd                        Enable rspamd and render per-domain spam rules.
   doctor                        Verify the deployment by observing it.
 
 Operating

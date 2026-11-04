@@ -452,6 +452,77 @@ Optional .env overrides:
 USAGE
 }
 
+# ./deploy.sh rspamd -- enable rspamd, render per-domain rules, reload.
+#
+# Opts the stack into rspamd spam inspection: sets RSPAMD_ENABLED=true in .env,
+# starts the rspamd service, renders the per-domain allow/block maps from the
+# management database, and reloads rspamd so the new rules are live.
+#
+# Optional flags:
+#   --render-only   only regenerate the maps and reload; assume already enabled.
+
+rspamd_cmd() {
+  local render_only=false
+  while (($#)); do
+    case $1 in
+      --render-only) render_only=true; shift ;;
+      -h|--help) rspamd_usage; return 0 ;;
+      *) die "rspamd: unknown option '$1'" ;;
+    esac
+  done
+
+  load_env
+  need_env POSTAL_IMAGE MAIN_DB_PASSWORD
+
+  if [[ $render_only != true ]]; then
+    env_set RSPAMD_ENABLED true
+    ok "RSPAMD_ENABLED=true in .env"
+    step "Starting rspamd"
+    compose up -d rspamd
+  fi
+
+  step "Rendering per-domain spam rules"
+  # Boot the app via rails runner in the bootstrap container so DomainSpamRule
+  # is loadable. The renderer writes host ./config/rspamd through the
+  # /rspamd-config mount, which the rspamd service binds into /etc/rspamd.
+  compose_setup run --rm -T \
+    -e RSPAMD_RENDER_DIR=/rspamd-config \
+    bootstrap bundle exec rails runner /deploy-lib/render_rspamd.rb \
+    || die "could not render rspamd maps"
+  ok "rules rendered"
+
+  step "Reloading rspamd"
+  if service_running rspamd; then
+    local cid
+    cid="$(compose ps -q rspamd)"
+    docker exec "$cid" rspamd --reload >/dev/null 2>&1 || \
+      docker kill --signal HUP "$cid" >/dev/null 2>&1 || \
+      warn "could not signal rspamd; it may pick up the maps on next start"
+    ok "rspamd reloaded"
+  else
+    info "rspamd not running; it will load the maps when ./deploy.sh up starts it"
+  fi
+
+  log ""
+  log "  Next: ./deploy.sh up   (if not already running with rspamd)"
+  log "        ./deploy.sh doctor (includes an rspamd reachability check)"
+}
+
+rspamd_usage() {
+  cat <<'USAGE'
+Usage: ./deploy.sh rspamd [--render-only]
+
+Enable rspamd and render per-domain spam rules into live rspamd maps.
+
+  --render-only   Only regenerate the maps and reload; do not change .env or
+                  start the service.
+
+The per-domain allow/block lists created through the management API
+(/api/v2/.../spam_rules) are rendered into rspamd multimap files and rspamd is
+reloaded so the rules take effect without restarting the stack.
+USAGE
+}
+
 onboard_usage() {
   cat <<'USAGE'
 Usage: ./deploy.sh onboard --domain client.com [options]
