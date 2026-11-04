@@ -263,12 +263,18 @@ cf_dns_desired() {
     fi
   done
 
-  printf 'TXT\t%s\tv=spf1 mx a:%s ~all\tfalse\n' "$DNS_SPF_INCLUDE" "$POSTAL_SMTP_HOSTNAME"
+  # SPF mechanism: ~all (softfail) is the safe default; -all (hardfail) is a
+  # stronger anti-spoofing signal once you are confident all legitimate mail
+  # originates here. Configure via DNS_SPF_ALLOW.
+  local spf_allow="${DNS_SPF_ALLOW:-~all}"
+  [[ $spf_allow == -all || $spf_allow == ~all ]] || spf_allow=~all
+
+  printf 'TXT\t%s\tv=spf1 mx a:%s %s\tfalse\n' "$DNS_SPF_INCLUDE" "$POSTAL_SMTP_HOSTNAME" "$spf_allow"
   printf 'MX\t%s\t10 %s\tfalse\n' "$DNS_RETURN_PATH_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
   # SPF must also exist on the return-path domain itself: the envelope sender is
   # <local>@<return-path domain>, so SPF is checked against it. Without this,
   # SPF is NONE and DMARC fails even when DKIM passes.
-  printf 'TXT\t%s\tv=spf1 mx a:%s ~all\tfalse\n' "$DNS_RETURN_PATH_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
+  printf 'TXT\t%s\tv=spf1 mx a:%s %s\tfalse\n' "$DNS_RETURN_PATH_DOMAIN" "$POSTAL_SMTP_HOSTNAME" "$spf_allow"
   printf 'MX\t%s\t10 %s\tfalse\n' "$DNS_ROUTE_DOMAIN" "$POSTAL_SMTP_HOSTNAME"
   printf 'CNAME\t%s\t%s.\ttrue\n' "$DNS_TRACK_DOMAIN" "$POSTAL_WEB_HOSTNAME"
 
@@ -581,8 +587,38 @@ cf_domain_publish() {
   # DNS_DMARC_POLICY (default: p=none, safe). Start at none to gather reports,
   # then tighten to quarantine/reject once the reports confirm no spoofing.
   local dmarc="${DNS_DMARC_POLICY:-v=DMARC1; p=none}"
+  # Optionally append an rua reporting address so you receive aggregate reports.
+  if [[ -n ${DNS_DMARC_RUA:-} ]]; then
+    dmarc="${dmarc}; rua=mailto:${DNS_DMARC_RUA}"
+  fi
   if [[ -n $dmarc ]]; then
     cf_upsert_record "$dry" TXT "_dmarc.${domain}" "$dmarc" false
+  fi
+
+  # TLS-RPT: reports TLS/MTA-STS failures to the given address. This is what
+  # surfaces a broken STARTTLS config at the recipient instead of it silently
+  # downgrading. Publish when a report address is configured.
+  if [[ -n ${DNS_TLS_RPT_RUA:-} ]]; then
+    cf_upsert_record "$dry" TXT "_smtp.tls.${domain}" "v=TLSRPTv1; rua=mailto:${DNS_TLS_RPT_RUA}" false
+  fi
+
+  # MTA-STS: the TXT tells enforcing senders to fetch the policy over HTTPS.
+  # Only publish when DNS_MTA_STS is enabled (the policy file must be served at
+  # https://mta-sts.<domain>/.well-known/mta-sts.txt). The TXT alone, without
+  # the policy, is harmless but does nothing.
+  if [[ ${DNS_MTA_STS:-false} == true ]]; then
+    local sts_id="${DNS_MTA_STS_ID:-$(date -u +%Y%m%d%H%M%S)}"
+    cf_upsert_record "$dry" TXT "_mta-sts.${domain}" "v=STSv1; id=${sts_id}" false
+  fi
+
+  # BIMI: shows a brand logo in supporting inboxes. Needs the SVG logo hosted at
+  # DNS_BIMI_LOGO_URL. Only publish when a URL is configured.
+  if [[ -n ${DNS_BIMI_LOGO_URL:-} ]]; then
+    local bimi="v=BIMI1; l=${DNS_BIMI_LOGO_URL}"
+    if [[ -n ${DNS_BIMI_AUTHORITY_URL:-} ]]; then
+      bimi="${bimi}; a=${DNS_BIMI_AUTHORITY_URL}"
+    fi
+    cf_upsert_record "$dry" TXT "default._bimi.${domain}" "$bimi" false
   fi
 
   ok "records for $domain are published in Cloudflare"

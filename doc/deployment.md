@@ -781,6 +781,18 @@ DKIM can both pass while DMARC still fails without this record. Start at
 `p=none` to gather aggregate reports, then tighten to `p=quarantine` and
 `p=reject` once reports confirm no spoofing.
 
+To further improve deliverability, compliance and reputation, the per-domain
+publish optionally writes, when configured in `.env`:
+- **TLS-RPT** (`_smtp.tls.<domain>`, from `DNS_TLS_RPT_RUA`) — receives reports
+  on TLS/MTA-STS failures.
+- **MTA-STS** (`_mta-sts.<domain>`, when `DNS_MTA_STS=true`) — requires the
+  policy file to also be served over HTTPS at
+  `https://mta-sts.<domain>/.well-known/mta-sts.txt`.
+- **BIMI** (`default._bimi.<domain>`, from `DNS_BIMI_LOGO_URL`) — brand logo in
+  supporting inboxes.
+- **DMARC rua** (`DNS_DMARC_RUA`) and **SPF hardening** (`DNS_SPF_ALLOW=-all`,
+  hardfail instead of the `~all` default).
+
 ## Outbound IP pools
 
 Off by default, and enabling it is not just a flag.
