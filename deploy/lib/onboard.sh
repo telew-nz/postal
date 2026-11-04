@@ -133,26 +133,23 @@ onboard_cmd() {
   local route_uuid=""
   if [[ -n ${POSTAL_DEFAULT_ROUTE_ENDPOINT:-} ]]; then
     step "Ensuring default HTTP route to $POSTAL_DEFAULT_ROUTE_ENDPOINT"
-    local http_uuid=""
-    api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/http_endpoints"
-    local he
-    while IFS= read -r he; do
-      [[ -n $he ]] || continue
-      local hu hurl
-      hu="$(printf '%s' "$he" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
-      hurl="$(printf '%s' "$he" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
-      if [[ -n $hu && $hurl == "$POSTAL_DEFAULT_ROUTE_ENDPOINT" ]]; then http_uuid="$hu"; break; fi
-    done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
-    if [[ -z $http_uuid ]]; then
-      api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/http_endpoints" \
-        "{\"name\":\"default-webhook\",\"url\":\"$POSTAL_DEFAULT_ROUTE_ENDPOINT\",\"encoding\":\"BodyAsJSON\",\"format\":\"Hash\"}"
-      [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create http endpoint -> $API_STATUS ($API_BODY)"
-      http_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    local inbound_url="${POSTAL_DEFAULT_HTTP_ENDPOINT:-${POSTAL_DEFAULT_ROUTE_ENDPOINT}}"
+    onboard_ensure_http_endpoint "$org_permalink" "$srv_permalink" "inbound" "$inbound_url"
+    local http_uuid="$ONBOARD_HTTP_UUID"
+    ok "http endpoint $http_uuid ($inbound_url)"
+
+    local webhook_uuid=""
+    if [[ -n ${POSTAL_DEFAULT_WEBHOOK_ENDPOINT:-} ]]; then
+      onboard_ensure_http_endpoint "$org_permalink" "$srv_permalink" "events" "$POSTAL_DEFAULT_WEBHOOK_ENDPOINT"
+      webhook_uuid="$ONBOARD_HTTP_UUID"
+      ok "webhook endpoint $webhook_uuid ($POSTAL_DEFAULT_WEBHOOK_ENDPOINT)"
     fi
-    ok "http endpoint $http_uuid ($POSTAL_DEFAULT_ROUTE_ENDPOINT)"
 
     # A wildcard route (*) on this domain delivers every unmatched local part to
-    # the webhook, making it the default route for all addresses on the domain.
+    # the default endpoint, making it the default route for all addresses on the
+    # domain. A second wildcard route cannot exist (name "*" is unique per
+    # domain), so the optional webhook is attached as an additional endpoint on
+    # this same route instead -- both receive a copy of every inbound message.
     api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
     while IFS= read -r r; do
       [[ -n $r ]] || continue
@@ -168,6 +165,16 @@ onboard_cmd() {
       route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
     fi
     ok "wildcard route $route_uuid"
+
+    if [[ -n $webhook_uuid ]]; then
+      api_request PUT "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes/$route_uuid" \
+        "{\"additional_route_endpoints_array\":[\"HTTPEndpoint#$webhook_uuid\"]}"
+      if [[ $API_STATUS == 200 || $API_STATUS == 204 ]]; then
+        ok "webhook attached to route $route_uuid"
+      else
+        warn "attach webhook -> $API_STATUS ($API_BODY)"
+      fi
+    fi
   else
     step "Ensuring a route to the address endpoint"
     api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
@@ -244,6 +251,30 @@ onboard_cmd() {
   echo "  API KEY (store this): $cred_key"
   echo "  send via X-Server-API-Key: $cred_key"
   echo "===================================================="
+}
+
+# Ensure an HTTP endpoint with the given name/url exists on a server, creating
+# it if absent. Prints nothing; sets ONBOARD_HTTP_UUID to the endpoint's uuid.
+# Reused by URL so onboarding stays idempotent.
+onboard_ensure_http_endpoint() {
+  local org=$1 srv=$2 ep_name=$3 ep_url=$4
+  local ep_uuid=""
+  api_request GET "/api/v2/organizations/$org/servers/$srv/http_endpoints"
+  local he
+  while IFS= read -r he; do
+    [[ -n $he ]] || continue
+    local hu hurl
+    hu="$(printf '%s' "$he" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+    hurl="$(printf '%s' "$he" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+    if [[ -n $hu && $hurl == "$ep_url" ]]; then ep_uuid="$hu"; break; fi
+  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+  if [[ -z $ep_uuid ]]; then
+    api_request POST "/api/v2/organizations/$org/servers/$srv/http_endpoints" \
+      "{\"name\":\"$ep_name\",\"url\":\"$ep_url\",\"encoding\":\"BodyAsJSON\",\"format\":\"Hash\"}"
+    [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create http endpoint '$ep_name' -> $API_STATUS ($API_BODY)"
+    ep_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+  fi
+  ONBOARD_HTTP_UUID="$ep_uuid"
 }
 
 # Send a message through the legacy API using a server API credential. The
