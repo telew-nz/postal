@@ -426,17 +426,19 @@ cf_status() {
 
 cf_domain_cmd() {
   local dry=$1; shift
-  local domain="" doverify=false
+  local domain="" doverify=false org="" srv=""
   while (($#)); do
     case $1 in
       --verify) doverify=true; shift ;;
+      --org) org=${2:?--org needs a value}; shift 2 ;;
+      --server) srv=${2:?--server needs a value}; shift 2 ;;
       -h|--help) cf_usage; return 0 ;;
       -*) die "cloudflare domain: unknown option '$1'" ;;
       *) [[ -z $domain ]] || die "cloudflare domain: too many arguments"; domain=$1; shift ;;
     esac
   done
   [[ -n $domain ]] || die "cloudflare domain: missing domain"
-  cf_domain_publish "$dry" "$domain" "$doverify"
+  cf_domain_publish "$dry" "$domain" "$doverify" "$org" "$srv"
 }
 
 # Find a domain by name across organizations (and their servers). Walks the
@@ -486,12 +488,24 @@ cf_domain_find_under() {
 }
 
 cf_domain_publish() {
-  local dry=$1 domain=$2 doverify=$3
+  local dry=$1 domain=$2 doverify=$3 org=${4:-} srv=${5:-}
   step "Publishing records for domain $domain"
   cf_zone_ready
 
-  if ! cf_domain_find "$domain"; then
-    die "domain '$domain' was not found via the Postal API (create it first, e.g. via ./deploy.sh or the web UI)"
+  if [[ -n $org && -n $srv ]]; then
+    # Explicit server scope: only look in that server's domains, so the correct
+    # domain record (and its DKIM) is always the one published.
+    if ! cf_domain_find_under "/api/v2/organizations/${org}/servers/${srv}" "$domain"; then
+      die "domain '$domain' was not found in server '$srv' (org '$org') via the Postal API"
+    fi
+  elif [[ -n $org ]]; then
+    if ! cf_domain_find_under "/api/v2/organizations/${org}" "$domain"; then
+      die "domain '$domain' was not found in org '$org' via the Postal API"
+    fi
+  else
+    if ! cf_domain_find "$domain"; then
+      die "domain '$domain' was not found via the Postal API (create it first, e.g. via ./deploy.sh or the web UI)"
+    fi
   fi
 
   # Always (re)publish the verification TXT first: it is needed until the
@@ -699,10 +713,13 @@ Provision Cloudflare for this installation via the API.
               for activation (NS verification).
   zone status <domain>
               Show a zone's status and nameservers.
-  domain <domain> [--verify]
+  domain <domain> [--verify] [--org ORG] [--server SRV]
               Publish a Postal domain's records (verification TXT, then SPF,
               DKIM, MX, CNAME) into its Cloudflare zone. Requires POSTAL_API_TOKEN.
               --verify also triggers verification when the domain is unverified.
+              If the same domain exists under several orgs/servers (each with its
+              own DKIM key), pass --org and --server to target the exact one that
+              will send, so the published DKIM matches.
   keys [--force]
               Copy CLOUDFLARE_API_TOKEN into CLOUDFLARE_DNS_API_TOKEN so one
               token drives provisioning and TLS issuance. No-op if it is already
