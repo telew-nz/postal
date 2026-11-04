@@ -201,13 +201,23 @@ onboard_cmd() {
   local cred_uuid="" cred_key=""
   api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/credentials"
   local c
+  local first_uuid=""
   while IFS= read -r c; do
     [[ -n $c ]] || continue
-    local cu ck
+    local cu ct
     cu="$(printf '%s' "$c" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
-    ck="$(printf '%s' "$c" | sed -n 's/.*"key":"\([^"]*\)".*/\1/p')"
-    if [[ -n $cu && -n $ck ]]; then cred_uuid="$cu"; cred_key="$ck"; break; fi
+    ct="$(printf '%s' "$c" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
+    [[ -n $cu ]] || continue
+    [[ -z $first_uuid ]] && first_uuid="$cu"
+    if [[ $ct == API ]]; then cred_uuid="$cu"; break; fi
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+  [[ -n $cred_uuid ]] || cred_uuid="$first_uuid"
+  if [[ -n $cred_uuid ]]; then
+    # The list endpoint redacts keys, so fetch the key via show.
+    api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/credentials/$cred_uuid"
+    [[ $API_STATUS == 200 ]] || die "fetch credential -> $API_STATUS ($API_BODY)"
+    cred_key="$(printf '%s' "$API_BODY" | grep -o '"key":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+  fi
   if [[ -z $cred_key ]]; then
     api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/credentials" \
       "{\"type\":\"API\",\"name\":\"onboard-api\"}"
