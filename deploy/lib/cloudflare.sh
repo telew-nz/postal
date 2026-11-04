@@ -179,17 +179,22 @@ cf_record_id() {
 # Create or update one DNS record. Updates are opportunistic (always write the
 # desired values) so repeated runs converge instead of colliding with the
 # pre-existing record.
+# $6 is an optional explicit priority. When it is not given and the type is MX,
+# the priority is split off the front of content ("10 mx.example.com"), which is
+# how the installation-wide desired rows are phrased. The per-domain API rows
+# already separate priority and value, so they pass it explicitly.
 cf_upsert_record() {
-  local dry=$1 type=$2 name=$3 content=$4 proxied=$5
+  local dry=$1 type=$2 name=$3 content=$4 proxied=$5 pri=${6:-}
   local zone=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
-  local full=$content pri=""
+  local full=$content
 
   # Cloudflare requires MX records to carry their priority as a separate field,
-  # with `content` holding only the exchange hostname. Our rows arrive with the
-  # priority glued on front ("10 mx.example.com"); split it here.
+  # with `content` holding only the exchange hostname.
   if [[ $type == MX ]]; then
-    pri="${content%% *}"
-    content="${content#* }"
+    if [[ -z $pri ]]; then
+      pri="${content%% *}"
+      content="${content#* }"
+    fi
   fi
 
   if [[ $dry == true ]]; then
@@ -521,15 +526,17 @@ cf_domain_publish() {
   local r
   while IFS= read -r r; do
     [[ -n $r ]] || continue
-    local type rname host value
+    local type rname host value pri
     type="$(printf '%s' "$r" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
     rname="$(printf '%s' "$r" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
     host="$(printf '%s' "$r" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')"
     value="$(printf '%s' "$r" | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')"
+    pri="$(printf '%s' "$r" | sed -n 's/.*"priority":\([0-9]*\).*/\1/p')"
     [[ -n $type && -n $value ]] || continue
     local name="${host:-$rname}"
-    # Per-domain records are mail/DNS records; never proxy them.
-    cf_upsert_record "$dry" "$type" "$name" "$value" false
+    # Per-domain records are mail/DNS records; never proxy them. The API
+    # supplies MX priority separately, which cf_upsert_record sends as-is.
+    cf_upsert_record "$dry" "$type" "$name" "$value" false "$pri"
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"host"[^{}]*}' || true)"
 
   ok "records for $domain are published in Cloudflare"
