@@ -134,6 +134,14 @@ Rails.application.routes.draw do
             delete "" => "address_endpoints#destroy"
           end
 
+          resources :webhooks, only: [:index, :create]
+          scope "webhooks/:uuid" do
+            get "" => "webhooks#show"
+            patch "" => "webhooks#update"
+            put "" => "webhooks#update"
+            delete "" => "webhooks#destroy"
+          end
+
           resources :ip_pool_rules, only: [:index, :create]
           scope "ip_pool_rules/:uuid" do
             get "" => "ip_pool_rules#show"
