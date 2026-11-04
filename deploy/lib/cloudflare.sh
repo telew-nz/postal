@@ -23,6 +23,20 @@
 #   CLOUDFLARE_ZONE_ID     defaults to a lookup from POSTAL_WEB_HOSTNAME.
 #   CLOUDFLARE_ACCOUNT_ID  defaults to the zone's owning account.
 
+# The primary org/domain: strip the leading subdomain label from the SMTP
+# hostname (mx.example.com -> example.com). MTA-STS and other
+# infrastructure-level records apply only here, not to client domains that
+# share this server.
+cf_primary_domain() {
+  local host="${POSTAL_SMTP_HOSTNAME:-${POSTAL_WEB_HOSTNAME:-}}"
+  local base="${host#*.}"
+  if [[ -n $base && $base == *.* ]]; then
+    printf '%s' "$base"
+  else
+    printf '%s' "$host"
+  fi
+}
+
 CF_API_BASE="https://api.cloudflare.com/client/v4"
 
 # ---------------------------------------------------------------------------
@@ -612,10 +626,12 @@ cf_domain_publish() {
   fi
 
   # MTA-STS: the TXT tells enforcing senders to fetch the policy over HTTPS.
-  # Only publish when DNS_MTA_STS is enabled (the policy file must be served at
-  # https://mta-sts.<domain>/.well-known/mta-sts.txt). The TXT alone, without
-  # the policy, is harmless but does nothing.
-  if [[ ${DNS_MTA_STS:-false} == true ]]; then
+  # This applies ONLY to the primary org/domain (the one that hosts the MX and
+  # whose mta-sts.<domain> host serves the policy). Client domains do not get an
+  # MTA-STS record — they get SPF/DKIM/DMARC/TLS-RPT only. The policy file must
+  # be served at https://mta-sts.<domain>/.well-known/mta-sts.txt before the TXT
+  # is published (enforce mode refuses plaintext delivery).
+  if [[ ${DNS_MTA_STS:-false} == true && $domain == "$(cf_primary_domain)" ]]; then
     local sts_id="${DNS_MTA_STS_ID:-$(date -u +%Y%m%d%H%M%S)}"
     cf_upsert_record "$dry" TXT "_mta-sts.${domain}" "v=STSv1; id=${sts_id}" false
   fi
