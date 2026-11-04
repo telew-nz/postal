@@ -252,6 +252,15 @@ nameservers to the ones printed. Only then can records be created in the zone
 the Postal organization/domain — that still goes through the management API and
 `./deploy.sh dns`.
 
+Once a domain exists in Postal, `./deploy.sh cloudflare domain <domain>`
+publishes its records into its Cloudflare zone automatically: it looks the
+domain up via the management API, (re)publishes the verification TXT, and, once
+verified, publishes the per-domain SPF/DKIM/MX/CNAME records via the Cloudflare
+API. `--verify` triggers domain verification after publishing the TXT.
+Requires `POSTAL_API_TOKEN` (from `./deploy.sh admin`) in addition to the
+Cloudflare token. This replaces the manual "publish the verification TXT, then
+re-run `dns`" loop for domains whose zone is in the same Cloudflare account.
+
 ## 4. Build, migrate, up
 
 ```bash

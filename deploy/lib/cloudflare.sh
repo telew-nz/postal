@@ -44,17 +44,23 @@ cf_cmd() {
   done
 
   case $sub in
-    provision|dns|tunnel|status|zone|keys) ;;
+    provision|dns|tunnel|status|zone|domain|keys) ;;
     *) die "cloudflare: unknown subcommand '$sub'" ;;
   esac
 
   require_cmd curl
   load_env
 
-  # `keys` only needs the token itself, not the install hostnames.
+  # `keys` and `domain` need the API token, but `domain` also needs the Postal
+  # API token to look the domain up.
   if [[ $sub == keys ]]; then
     need_env CLOUDFLARE_API_TOKEN
     cf_keys_cmd "$dry" "${rest[@]}"
+    return 0
+  fi
+  if [[ $sub == domain ]]; then
+    need_env CLOUDFLARE_API_TOKEN POSTAL_API_TOKEN
+    cf_domain_cmd "$dry" "${rest[@]}"
     return 0
   fi
 
@@ -410,6 +416,127 @@ cf_status() {
 }
 
 # ---------------------------------------------------------------------------
+# Per-domain records: publish a Postal domain's records into Cloudflare
+# ---------------------------------------------------------------------------
+
+cf_domain_cmd() {
+  local dry=$1; shift
+  local domain="" doverify=false
+  while (($#)); do
+    case $1 in
+      --verify) doverify=true; shift ;;
+      -h|--help) cf_usage; return 0 ;;
+      -*) die "cloudflare domain: unknown option '$1'" ;;
+      *) [[ -z $domain ]] || die "cloudflare domain: too many arguments"; domain=$1; shift ;;
+    esac
+  done
+  [[ -n $domain ]] || die "cloudflare domain: missing domain"
+  cf_domain_publish "$dry" "$domain" "$doverify"
+}
+
+# Find a domain by name across organizations (and their servers). Walks the
+# same two trees dns.sh does. Sets CF_DOMAIN_UUID and CF_DOMAIN_BASE (the API
+# path segment the domain answers on).
+cf_domain_find() {
+  local want=$1
+  api_request GET /api/v2/organizations
+  [[ $API_STATUS == 200 ]] || die "POSTAL API: GET /organizations -> $API_STATUS"
+  local permalinks
+  permalinks="$(printf '%s' "$API_BODY" | grep -o '"permalink":"[^"]*"' | sed 's/"permalink":"//; s/"$//')"
+  local org
+  while read -r org; do
+    [[ -n $org ]] || continue
+    if cf_domain_find_under "/api/v2/organizations/${org}" "$want"; then return 0; fi
+    api_request GET "/api/v2/organizations/${org}/servers"
+    if [[ $API_STATUS == 200 ]]; then
+      local servers
+      servers="$(printf '%s' "$API_BODY" | grep -o '"permalink":"[^"]*"' | sed 's/"permalink":"//; s/"$//')"
+      local srv
+      while read -r srv; do
+        [[ -n $srv ]] || continue
+        if cf_domain_find_under "/api/v2/organizations/${org}/servers/${srv}" "$want"; then return 0; fi
+      done <<<"$servers"
+    fi
+  done <<<"$permalinks"
+  return 1
+}
+
+cf_domain_find_under() {
+  local base=$1 want=$2
+  api_request GET "${base}/domains"
+  [[ $API_STATUS == 200 ]] || return 1
+  local d
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    local uuid name
+    uuid="$(printf '%s' "$d" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+    name="$(printf '%s' "$d" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+    if [[ -n $uuid && $name == "$want" ]]; then
+      CF_DOMAIN_UUID=$uuid
+      CF_DOMAIN_BASE="${base}/domains/${uuid}"
+      return 0
+    fi
+  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+  return 1
+}
+
+cf_domain_publish() {
+  local dry=$1 domain=$2 doverify=$3
+  step "Publishing records for domain $domain"
+  cf_zone_ready
+
+  if ! cf_domain_find "$domain"; then
+    die "domain '$domain' was not found via the Postal API (create it first, e.g. via ./deploy.sh or the web UI)"
+  fi
+
+  # Always (re)publish the verification TXT first: it is needed until the
+  # domain is verified, and it is idempotent.
+  local verify_prefix="${DNS_DOMAIN_VERIFY_PREFIX:-postal-verification}"
+  api_request GET "${CF_DOMAIN_BASE}"
+  local verified token
+  verified="$(printf '%s' "$API_BODY" | sed -n 's/.*"verified":\([a-z]*\).*/\1/p')"
+  token="$(printf '%s' "$API_BODY" | sed -n 's/.*"verification_token":"\([^"]*\)".*/\1/p')"
+  if [[ -z $token ]]; then
+    die "could not read the verification token for $domain"
+  fi
+  cf_upsert_record "$dry" TXT "${verify_prefix}.${domain}" "${verify_prefix} ${token}" false
+
+  if [[ $verified != true ]]; then
+    info "domain is unverified. The verification TXT has been published."
+    if [[ $doverify == true ]]; then
+      [[ $dry == true ]] || {
+        api_request POST "${CF_DOMAIN_BASE}/verify"
+        [[ $API_STATUS == 200 ]] || die "POSTAL API: POST ${CF_DOMAIN_BASE}/verify -> $API_STATUS ($API_BODY)"
+        ok "domain verification requested via the API"
+      }
+    else
+      info "re-run with --verify after the TXT resolves to trigger verification."
+    fi
+    return 0
+  fi
+
+  # Verified: publish every record the API reports for the domain.
+  api_request GET "${CF_DOMAIN_BASE}/dns_records"
+  [[ $API_STATUS == 200 ]] || die "POSTAL API: GET ${CF_DOMAIN_BASE}/dns_records -> $API_STATUS"
+  local r
+  while IFS= read -r r; do
+    [[ -n $r ]] || continue
+    local type rname host value
+    type="$(printf '%s' "$r" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
+    rname="$(printf '%s' "$r" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+    host="$(printf '%s' "$r" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')"
+    value="$(printf '%s' "$r" | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')"
+    [[ -n $type && -n $value ]] || continue
+    local name="${host:-$rname}"
+    # Per-domain records are mail/DNS records; never proxy them.
+    cf_upsert_record "$dry" "$type" "$name" "$value" false
+  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"host"[^{}]*}' || true)"
+
+  ok "records for $domain are published in Cloudflare"
+  log "  Run ./deploy.sh doctor to confirm everything resolves."
+}
+
+# ---------------------------------------------------------------------------
 # Client domain onboarding: add a zone and confirm activation
 # ---------------------------------------------------------------------------
 
@@ -565,6 +692,10 @@ Provision Cloudflare for this installation via the API.
               for activation (NS verification).
   zone status <domain>
               Show a zone's status and nameservers.
+  domain <domain> [--verify]
+              Publish a Postal domain's records (verification TXT, then SPF,
+              DKIM, MX, CNAME) into its Cloudflare zone. Requires POSTAL_API_TOKEN.
+              --verify also triggers verification when the domain is unverified.
   keys [--force]
               Copy CLOUDFLARE_API_TOKEN into CLOUDFLARE_DNS_API_TOKEN so one
               token drives provisioning and TLS issuance. No-op if it is already
