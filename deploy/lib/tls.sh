@@ -289,13 +289,36 @@ tls_renew() {
   tls_prepare
   tls_load_domains
 
-  local primary="${TLS_DOMAINS[0]}"
+  # The ACME state directory that covers every currently required name. For a
+  # plainly-issued certificate this is usually the first config-derived name. For
+  # a wildcard issue the state lives under the apex (thefizzylab.nz) while the
+  # config names are the MX hostnames (mx.thefizzylab.nz), so we cannot assume
+  # the directory name equals TLS_DOMAINS[0].
+  local primary=""
+  local d
+  for d in "$ACME_DIR"/*/; do
+    [[ -d $d ]] || continue
+    local cand="${d%/}"; cand="${cand##*/}"
+    local all_covered=true n san
+    local sans
+    sans="$(tls_cert_sans "$d/fullchain.cer")"
+    [[ -n $sans ]] || continue
+    for n in ${TLS_DOMAINS[@]+"${TLS_DOMAINS[@]}"}; do
+      local covered=false
+      for san in $sans; do
+        if tls_san_covers "$san" "$n"; then covered=true; break; fi
+      done
+      if [[ $covered != true ]]; then all_covered=false; break; fi
+    done
+    if [[ $all_covered == true ]]; then primary="$cand"; break; fi
+  done
+
   # Distinguished from a renewal failure because the two need different
   # responses: this one is "run tls issue", the other is "read the log". Without
   # the check, a timer firing on a host which never issued would report an acme.sh
   # error about a domain it has no configuration for.
-  if [[ ! -d "$ACME_DIR/$primary" ]]; then
-    die "no certificate has ever been issued for $primary. Run ./deploy.sh tls issue first."
+  if [[ -z $primary ]]; then
+    die "no certificate has ever been issued that covers ${TLS_DOMAINS[*]}. Run ./deploy.sh tls issue first."
   fi
 
   step "Renewing the certificate for ${TLS_DOMAINS[*]}"
@@ -304,11 +327,15 @@ tls_renew() {
   # DNS_MX_RECORDS gained a name since issuance, and the result is a valid,
   # trusted certificate which no longer covers one of the names remote servers are
   # told to connect to -- reported nowhere here, and refused at the sender.
-  local issued missing=() n
+  local issued missing=() n san
   issued="$(tls_cert_sans "$(tls_cert_source "$primary")")"
   if [[ -n $issued ]]; then
     for n in ${TLS_DOMAINS[@]+"${TLS_DOMAINS[@]}"}; do
-      if ! printf '%s\n' "$issued" | grep -Fxq -- "$n"; then missing+=("$n"); fi
+      local covered=false
+      for san in $issued; do
+        if tls_san_covers "$san" "$n"; then covered=true; break; fi
+      done
+      [[ $covered == true ]] || missing+=("$n")
     done
     if ((${#missing[@]})); then
       warn "the installed certificate does not cover: ${missing[*]}"
@@ -752,15 +779,33 @@ tls_expiry_verdict() {
   return 0
 }
 
+# Whether a SAN covers a required name. A literal `*.domain` SAN covers any
+# subdomain of domain (the apex itself is normally a separate SAN). Exact match
+# covers the name itself.
+tls_san_covers() {
+  local san=$1 required=$2
+  if [[ $san == "$required" ]]; then return 0; fi
+  if [[ $san == \*.* ]]; then
+    local base="${san#\*.}"
+    if [[ $required == "$base" ]]; then return 0; fi
+    if [[ $required == *."$base" ]]; then return 0; fi
+  fi
+  return 1
+}
+
 # The required names the certificate does not cover, one per line. Empty output
 # means full coverage, or that there was nothing to compare against -- callers
 # distinguish those by checking whether the certificate has any SAN at all.
 tls_missing_names() {
-  local sans n
+  local sans n san
   sans="$(tls_cert_sans "$TLS_CERT")"
   if [[ -z $sans ]]; then return 0; fi
   for n in ${TLS_DOMAINS[@]+"${TLS_DOMAINS[@]}"}; do
-    if ! printf '%s\n' "$sans" | grep -qx -- "$n"; then printf '%s\n' "$n"; fi
+    local covered=false
+    for san in $sans; do
+      if tls_san_covers "$san" "$n"; then covered=true; break; fi
+    done
+    if [[ $covered != true ]]; then printf '%s\n' "$n"; fi
   done
   return 0
 }
