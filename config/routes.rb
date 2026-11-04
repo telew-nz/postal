@@ -166,6 +166,7 @@ Rails.application.routes.draw do
               post "retry" => "messages#retry"
               post "cancel_hold" => "messages#cancel_hold"
               delete "remove_from_queue" => "messages#remove_from_queue"
+              post "spam_feedback" => "spam_feedback#create"
             end
           end
         end

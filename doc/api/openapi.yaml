@@ -809,6 +809,22 @@ components:
         enabled:
           type: boolean
 
+    SpamFeedbackInput:
+      type: object
+      required: [verdict]
+      properties:
+        verdict:
+          type: string
+          enum: [spam, ham]
+        action:
+          type: string
+          enum: [reject, mark_spam, add_header, none]
+          description: Override the action for the created rule. Defaults to reject for blocklists and none for allowlists.
+        domain_uuid:
+          type: string
+          format: uuid
+          description: Attach the rule to this domain instead of resolving it from the message's recipients.
+
     Credential:
       type: object
       description: |
@@ -5166,6 +5182,49 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/spam_feedback:
+    post:
+      tags: [Messages]
+      operationId: createSpamFeedback
+      summary: Submit spam/ham feedback for a message
+      description: |
+        Converts a message verdict into a per-domain spam rule keyed on the
+        sender address: a "ham" verdict allowlists the sender, a "spam"
+        verdict blocklists it. The rule is attached to the domain the message
+        was received for, resolved from the message's recipients unless
+        domain_uuid is supplied.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/MessageID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamFeedbackInput'
+      responses:
+        '201':
+          description: The created or updated spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
 
   /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/messages/{id}/deliveries:
     get:
