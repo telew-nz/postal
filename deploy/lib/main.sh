@@ -45,6 +45,7 @@ main() {
     tls)       tls_cmd "$@" ;;
     doctor)    doctor_cmd "$@" ;;
     onboard)   onboard_cmd "$@" ;;
+    teardown)  teardown_cmd "$@" ;;
 
     # Data
     backup)    backup_cmd "$@" ;;
@@ -105,6 +106,8 @@ Setup, in the order a new installation needs them
                                 validated by DNS-01 through the Cloudflare API.
   onboard --domain client.com    Automate the full client-onboarding flow and
                                 print the delivered API key.
+  teardown --domain client.com   Cleanly remove the domain, its Cloudflare DNS
+                                records, and optionally the server/org.
   doctor                        Verify the deployment by observing it.
 
 Operating

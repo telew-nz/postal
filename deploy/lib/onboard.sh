@@ -225,6 +225,164 @@ onboard_send() {
   fi
 }
 
+# ./deploy.sh teardown -- cleanly remove a client domain and its DNS records.
+#
+# Removes, in order:
+#   1. the domain's Cloudflare DNS records (from the per-domain dns_records
+#      plus the verification TXT)
+#   2. the domain from Postal
+#   3. optionally the mail server (--server) and organization (--org)
+#
+# Requires the same scoping flags as `cloudflare domain` so the correct domain
+# record is torn down.
+
+teardown_cmd() {
+  local domain="" org="" srv_name="" remove_server=false remove_org=false dry=false
+
+  while (($#)); do
+    case $1 in
+      --domain) domain=${2:?--domain needs a value}; shift 2 ;;
+      --org) org=${2:?--org needs a value}; shift 2 ;;
+      --server-name) srv_name=${2:?--server-name needs a value}; shift 2 ;;
+      --server) remove_server=true; shift ;;
+      --remove-org) remove_org=true; shift ;;
+      --dry-run) dry=true; shift ;;
+      -h|--help) teardown_usage; return 0 ;;
+      *) die "teardown: unknown option '$1'" ;;
+    esac
+  done
+
+  [[ -n $domain ]] || die "teardown: --domain is required"
+
+  require_cmd curl
+  load_env
+  need_env POSTAL_API_TOKEN CLOUDFLARE_API_TOKEN POSTAL_WEB_HOSTNAME
+
+  local apibase api
+  apibase="$(api_base_url)"
+  api="$apibase/api/v2"
+
+  step() { echo; echo "==> $*"; }
+
+  # --- resolve scope ---
+  step "Resolving organization"
+  local org_permalink="$org"
+  if [[ -z $org_permalink ]]; then
+    api_request GET /api/v2/organizations
+    org_permalink="$(printf '%s' "$API_BODY" | grep -o '"permalink":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+  fi
+  [[ -n $org_permalink ]] || die "teardown: could not resolve an organization"
+
+  local srv_permalink="$srv_name"
+  if [[ -n $srv_name ]]; then
+    api_request GET "/api/v2/organizations/$org_permalink/servers"
+    srv_permalink="$(printf '%s' "$API_BODY" | grep -o '"permalink":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+  fi
+  [[ -n $srv_permalink ]] || srv_permalink="$srv_name"
+
+  # --- find domain ---
+  step "Locating domain under server"
+  local base_url
+  if [[ -n $srv_permalink ]]; then
+    base_url="/api/v2/organizations/$org_permalink/servers/$srv_permalink"
+  else
+    base_url="/api/v2/organizations/$org_permalink"
+  fi
+  local dom_uuid=""
+  api_request GET "$base_url/domains"
+  local d
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    local du dn
+    du="$(printf '%s' "$d" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+    dn="$(printf '%s' "$d" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+    if [[ -n $du && $dn == "$domain" ]]; then dom_uuid="$du"; break; fi
+  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+  [[ -n $dom_uuid ]] || die "teardown: domain '$domain' not found under the resolved scope"
+
+  # --- delete Cloudflare DNS records ---
+  step "Removing Cloudflare DNS records for $domain"
+  cf_zone_ready
+  local verify_prefix="${DNS_DOMAIN_VERIFY_PREFIX:-postal-verification}"
+  cf_delete_record "$dry" TXT "${verify_prefix}.${domain}"
+
+  api_request GET "$base_url/domains/$dom_uuid/dns_records"
+  if [[ $API_STATUS == 200 ]]; then
+    local r
+    while IFS= read -r r; do
+      [[ -n $r ]] || continue
+      local type host value
+      type="$(printf '%s' "$r" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
+      host="$(printf '%s' "$r" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')"
+      value="$(printf '%s' "$r" | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')"
+      [[ -n $type && -n $host ]] || continue
+      cf_delete_record "$dry" "$type" "$host"
+    done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"host"[^{}]*}' || true)"
+  else
+    warn "could not fetch dns_records for $domain (API $API_STATUS); skipping per-record deletion"
+  fi
+  # The apex TXT (SPF) is a per-domain record; delete it too.
+  cf_delete_record "$dry" TXT "$domain"
+
+  # --- delete domain from Postal ---
+  step "Deleting domain from Postal"
+  if [[ $dry == true ]]; then
+    log "  [dry-run] would DELETE $base_url/domains/$dom_uuid"
+  else
+    api_request DELETE "$base_url/domains/$dom_uuid"
+    [[ $API_STATUS == 204 || $API_STATUS == 200 ]] || warn "domain delete -> $API_STATUS ($API_BODY)"
+    ok "deleted domain '$domain'"
+  fi
+
+  # --- optionally delete server / org ---
+  if [[ $remove_server == true && -n $srv_permalink ]]; then
+    step "Deleting mail server"
+    if [[ $dry == true ]]; then
+      log "  [dry-run] would DELETE /api/v2/organizations/$org_permalink/servers/$srv_permalink"
+    else
+      api_request DELETE "/api/v2/organizations/$org_permalink/servers/$srv_permalink"
+      [[ $API_STATUS == 204 || $API_STATUS == 200 ]] || warn "server delete -> $API_STATUS ($API_BODY)"
+      ok "deleted server '$srv_permalink'"
+    fi
+  fi
+  if [[ $remove_org == true ]]; then
+    step "Deleting organization"
+    if [[ $dry == true ]]; then
+      log "  [dry-run] would DELETE /api/v2/organizations/$org_permalink"
+    else
+      api_request DELETE "/api/v2/organizations/$org_permalink"
+      [[ $API_STATUS == 204 || $API_STATUS == 200 ]] || warn "org delete -> $API_STATUS ($API_BODY)"
+      ok "deleted organization '$org_permalink'"
+    fi
+  fi
+
+  echo
+  echo "================ teardown complete ================"
+  echo "  domain:    $domain"
+  if [[ $remove_server == true ]]; then echo "  server:    $srv_permalink (removed)"; fi
+  if [[ $remove_org == true ]]; then echo "  org:       $org_permalink (removed)"; fi
+  echo "===================================================="
+}
+
+teardown_usage() {
+  cat <<'USAGE'
+Usage: ./deploy.sh teardown --domain client.com [options]
+
+Cleanly removes a client domain and its infrastructure.
+
+  --domain client.com  The domain to tear down (required).
+  --org NAME           Organization permalink (default: first found).
+  --server-name NAME   Mail server permalink (default: first found).
+  --server             Also delete the mail server after the domain.
+  --remove-org         Also delete the organization after the server/domain.
+  --dry-run            Print what would happen without changing anything.
+
+Removes the domain's Cloudflare DNS records (per-domain records + verification
+TXT), then the Postal domain, and optionally the server and organization. This
+is the clean mirror of `onboard`.
+USAGE
+}
+
 onboard_usage() {
   cat <<'USAGE'
 Usage: ./deploy.sh onboard --domain client.com [options]

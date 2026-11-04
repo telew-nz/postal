@@ -179,6 +179,25 @@ cf_record_id() {
 # Create or update one DNS record. Updates are opportunistic (always write the
 # desired values) so repeated runs converge instead of colliding with the
 # pre-existing record.
+# Delete the DNS record (by type+name) if it exists. No-op when absent.
+cf_delete_record() {
+  local dry=$1 type=$2 name=$3
+  local zone=${CLOUDFLARE_ZONE_ID:-$CF_ZONE_ID}
+  if [[ $dry == true ]]; then
+    log "  [dry-run] delete dns_records: $type $name"
+    return 0
+  fi
+  local id
+  id="$(cf_record_id "$type" "$name")"
+  if [[ -z $id ]]; then
+    ok "dns_records: $type $name not present"
+    return 0
+  fi
+  cf_call DELETE "/zones/${zone}/dns_records/${id}"
+  cf_require_success "delete $type $name" "$CF_HTTP" "$CF_BODY"
+  ok "dns_records: deleted $type $name"
+}
+
 # $6 is an optional explicit priority. When it is not given and the type is MX,
 # the priority is split off the front of content ("10 mx.example.com"), which is
 # how the installation-wide desired rows are phrased. The per-domain API rows
