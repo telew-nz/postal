@@ -66,11 +66,13 @@ tls_cmd() {
   if (($#)); then shift; fi
 
   case $sub in
-    issue)   tls_issue "$@" ;;
-    renew)   tls_renew "$@" ;;
-    install) tls_install_cmd "$@" ;;
-    import)  tls_import_cmd "$@" ;;
-    status)  tls_status "$@" ;;
+    issue)        tls_issue "$@" ;;
+    renew)        tls_renew "$@" ;;
+    install)      tls_install_cmd "$@" ;;
+    import)       tls_import_cmd "$@" ;;
+    install-timer) tls_install_timer_cmd "$@" ;;
+    remove-timer)  tls_remove_timer_cmd "$@" ;;
+    status)       tls_status "$@" ;;
     -h|--help) tls_usage; return 0 ;;
     *)
       printf 'deploy.sh: unknown tls subcommand "%s"\n\n' "$sub" >&2
@@ -965,6 +967,10 @@ DNS-01 challenge answered through the Cloudflare API.
                       the names this configuration needs, chain length, days to
                       expiry, whether the key matches, and a real STARTTLS
                       handshake against port 25.
+  install-timer       Write and enable the systemd unit + timer that run `tls
+                      renew` twice daily. Requires root. This is what makes
+                      renewal automatic.
+  remove-timer        Disable and remove the timer and unit.
 
 Required in .env
   CLOUDFLARE_DNS_API_TOKEN   An API token with Zone / DNS / Edit on the zone
@@ -1004,4 +1010,77 @@ doc/deployment.md. The short version: inbound mail is opportunistic, so a
 self-signed certificate already works for it. A trusted certificate is what
 MTA-STS enforcement and mail-client submission require.
 USAGE
+}
+
+# ---------------------------------------------------------------------------
+# install-timer / remove-timer
+#
+# Renewal is driven from the host by systemd, not by a sidecar. The SMTP server
+# reads the certificate once at process start and has no reload signal, so the
+# timer runs `tls renew` which recreates the smtp container only when the
+# certificate actually changed. Twice daily matches Let's Encrypt's
+# recommendation given the 30-day renewal window.
+
+TLS_UNIT="postal-tls.service"
+TLS_TIMER="postal-tls.timer"
+
+# systemd unit files are written by this tool but are host configuration: the
+# ExecStart path is absolute and rooted at DEPLOY_DIR, so they are rendered here
+# rather than committed.
+
+tls_install_timer_cmd() {
+  local service_file="/etc/systemd/system/$TLS_UNIT"
+  local timer_file="/etc/systemd/system/$TLS_TIMER"
+
+  if [[ $(id -u) -ne 0 ]]; then
+    die "install-timer must be run as root (sudo ./deploy.sh tls install-timer)"
+  fi
+
+  # Render the unit and timer files.
+  cat > "$service_file" <<EOF
+[Unit]
+Description=Renew the Postal SMTP certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=$DEPLOY_DIR/deploy.sh tls renew
+EOF
+
+  cat > "$timer_file" <<EOF
+[Unit]
+Description=Renew the Postal SMTP certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 03,15:20:00
+Persistent=true
+Unit=$TLS_UNIT
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable "$TLS_TIMER" >/dev/null
+  systemctl start "$TLS_TIMER"
+
+  ok "installed and enabled $TLS_TIMER"
+  log "  runs 'deploy.sh tls renew' at 03:20 and 15:20 UTC daily"
+  log "  check: systemctl list-timers $TLS_TIMER"
+}
+
+tls_remove_timer_cmd() {
+  local service_file="/etc/systemd/system/$TLS_UNIT"
+  local timer_file="/etc/systemd/system/$TLS_TIMER"
+
+  if [[ $(id -u) -ne 0 ]]; then
+    die "remove-timer must be run as root (sudo ./deploy.sh tls remove-timer)"
+  fi
+
+  systemctl disable --now "$TLS_TIMER" 2>/dev/null || true
+  rm -f "$timer_file" "$service_file"
+  systemctl daemon-reload
+  ok "removed and disabled $TLS_TIMER"
 }
