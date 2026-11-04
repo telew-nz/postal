@@ -6,8 +6,9 @@
 #   2. ensure the mail server exists (or create it)
 #   3. create the domain under the server
 #   4. publish + verify the domain's DNS records in Cloudflare
-#   5. create an address endpoint (receive@<domain>)
-#   6. create a route to that address endpoint
+#   5. create an address endpoint (receive@<domain>) unless
+#      POSTAL_DEFAULT_ROUTE_ENDPOINT points routes at a webhook
+#   6. create a route (a wildcard webhook route, or to the address endpoint)
 #   7. create an API credential and capture its key
 #   8. optionally send an outbound test message and an inbound loopback
 #   9. print a summary, including the API credential key
@@ -84,22 +85,24 @@ onboard_cmd() {
 
   # --- 3. domain under server ---
   step "Ensuring domain under server"
-  local dom_uuid=""
+  local dom_uuid="" dom_id=""
   api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/domains"
   local d
   while IFS= read -r d; do
     [[ -n $d ]] || continue
-    local du dn
+    local du dn di
     du="$(printf '%s' "$d" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
     dn="$(printf '%s' "$d" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
-    if [[ -n $du && $dn == "$domain" ]]; then dom_uuid="$du"; break; fi
+    di="$(printf '%s' "$d" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
+    if [[ -n $du && $dn == "$domain" ]]; then dom_uuid="$du"; dom_id="$di"; break; fi
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
   if [[ -z $dom_uuid ]]; then
     api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/domains" "{\"name\":\"$domain\"}"
     [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create domain -> $API_STATUS ($API_BODY)"
     dom_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    dom_id="$(printf '%s' "$API_BODY" | grep -o '"id":[0-9]*' | head -1 | sed 's/.*://')"
   fi
-  ok "domain uuid: $dom_uuid"
+  ok "domain uuid: $dom_uuid (id $dom_id)"
 
   # --- 4. publish + verify DNS ---
   step "Publishing and verifying DNS records in Cloudflare"
@@ -127,23 +130,61 @@ onboard_cmd() {
   ok "address endpoint $addr ($addr_uuid)"
 
   # --- 6. route ---
-  step "Ensuring a route to the address endpoint"
   local route_uuid=""
-  api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
-  local r
-  while IFS= read -r r; do
-    [[ -n $r ]] || continue
-    local ru
-    ru="$(printf '%s' "$r" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
-    if [[ -n $ru ]]; then route_uuid="$ru"; break; fi
-  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
-  if [[ -z $route_uuid ]]; then
-    api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
-      "{\"name\":\"receive-$domain\",\"endpoint_type\":\"AddressEndpoint\",\"endpoint_uuid\":\"$addr_uuid\"}"
-    [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create route -> $API_STATUS ($API_BODY)"
-    route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+  if [[ -n ${POSTAL_DEFAULT_ROUTE_ENDPOINT:-} ]]; then
+    step "Ensuring default HTTP route to $POSTAL_DEFAULT_ROUTE_ENDPOINT"
+    local http_uuid=""
+    api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/http_endpoints"
+    local he
+    while IFS= read -r he; do
+      [[ -n $he ]] || continue
+      local hu hurl
+      hu="$(printf '%s' "$he" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+      hurl="$(printf '%s' "$he" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')"
+      if [[ -n $hu && $hurl == "$POSTAL_DEFAULT_ROUTE_ENDPOINT" ]]; then http_uuid="$hu"; break; fi
+    done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+    if [[ -z $http_uuid ]]; then
+      api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/http_endpoints" \
+        "{\"name\":\"default-webhook\",\"url\":\"$POSTAL_DEFAULT_ROUTE_ENDPOINT\"}"
+      [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create http endpoint -> $API_STATUS ($API_BODY)"
+      http_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    fi
+    ok "http endpoint $http_uuid ($POSTAL_DEFAULT_ROUTE_ENDPOINT)"
+
+    # A wildcard route (*) on this domain delivers every unmatched local part to
+    # the webhook, making it the default route for all addresses on the domain.
+    api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
+    while IFS= read -r r; do
+      [[ -n $r ]] || continue
+      local rn ru
+      rn="$(printf '%s' "$r" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+      ru="$(printf '%s' "$r" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+      if [[ $rn == "*" ]]; then route_uuid="$ru"; break; fi
+    done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+    if [[ -z $route_uuid ]]; then
+      api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
+        "{\"name\":\"*\",\"domain_id\":$dom_id,\"endpoint_type\":\"HTTPEndpoint\",\"endpoint_uuid\":\"$http_uuid\"}"
+      [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create route -> $API_STATUS ($API_BODY)"
+      route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    fi
+    ok "wildcard route $route_uuid"
+  else
+    step "Ensuring a route to the address endpoint"
+    api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
+    while IFS= read -r r; do
+      [[ -n $r ]] || continue
+      local ru
+      ru="$(printf '%s' "$r" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+      if [[ -n $ru ]]; then route_uuid="$ru"; break; fi
+    done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+    if [[ -z $route_uuid ]]; then
+      api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
+        "{\"name\":\"receive-$domain\",\"domain_id\":$dom_id,\"endpoint_type\":\"AddressEndpoint\",\"endpoint_uuid\":\"$addr_uuid\"}"
+      [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create route -> $API_STATUS ($API_BODY)"
+      route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    fi
+    ok "route $route_uuid"
   fi
-  ok "route $route_uuid"
 
   # --- 7. API credential ---
   step "Ensuring an API credential"
