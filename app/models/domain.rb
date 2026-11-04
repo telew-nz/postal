@@ -53,6 +53,7 @@ class Domain < ApplicationRecord
   belongs_to :owner, optional: true, polymorphic: true
   has_many :routes, dependent: :destroy
   has_many :track_domains, dependent: :destroy
+  has_many :spam_rules, dependent: :destroy, class_name: "DomainSpamRule"
 
   validates :name, presence: true, format: { with: /\A[a-z0-9\-.]*\z/ }, uniqueness: { case_sensitive: false, scope: [:owner_type, :owner_id], message: "is already added" }
   validates :verification_method, inclusion: { in: VERIFICATION_METHODS }

@@ -74,6 +74,18 @@ ActiveRecord::Schema[7.0].define(version: 2026_09_23_120000) do
     t.string "uuid"
   end
 
+  create_table "domain_spam_rules", id: :integer, charset: "utf8mb4", collation: "utf8mb4_general_ci", force: :cascade do |t|
+    t.string "uuid"
+    t.integer "domain_id"
+    t.string "kind", null: false
+    t.string "match_type", null: false
+    t.string "value", null: false
+    t.string "action", null: false
+    t.boolean "enabled", default: true
+    t.datetime "created_at", precision: nil
+    t.datetime "updated_at", precision: nil
+  end
+
   create_table "domains", id: :integer, charset: "utf8mb4", collation: "utf8mb4_general_ci", force: :cascade do |t|
     t.integer "server_id"
     t.string "uuid"

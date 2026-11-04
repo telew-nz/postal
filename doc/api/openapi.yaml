@@ -757,6 +757,58 @@ components:
           type: string
           format: date-time
 
+    SpamRule:
+      type: object
+      description: A per-domain allowlist or blocklist rule for an address or domain.
+      required: [uuid, domain_id, kind, match_type, value, action, enabled]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        domain_id:
+          type: integer
+        kind:
+          type: string
+          enum: [allowlist, blocklist]
+        match_type:
+          type: string
+          enum: [address, domain]
+        value:
+          type: string
+          description: The address (user@example.com) or domain (example.com) being matched.
+        action:
+          type: string
+          enum: [reject, mark_spam, add_header, none]
+          description: What to do for a blocklist match. Ignored for allowlists.
+        enabled:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SpamRuleInput:
+      type: object
+      required: [kind, match_type, value]
+      properties:
+        kind:
+          type: string
+          enum: [allowlist, blocklist]
+        match_type:
+          type: string
+          enum: [address, domain]
+        value:
+          type: string
+          description: The address (user@example.com) or domain (example.com) being matched.
+        action:
+          type: string
+          enum: [reject, mark_spam, add_header, none]
+          description: What to do for a blocklist match. Required for blocklists; ignored for allowlists.
+        enabled:
+          type: boolean
+
     Credential:
       type: object
       description: |
@@ -2350,6 +2402,186 @@ paths:
                   code: NotVerified
                   message: This domain has not been verified yet.
 
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/spam_rules:
+    get:
+      tags: [Domains]
+      operationId: listDomainSpamRules
+      summary: List the spam rules for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of spam rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpamRule'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Domains]
+      operationId: createDomainSpamRule
+      summary: Create a spam rule for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '201':
+          description: The created spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/spam_rules/{uuid}:
+    get:
+      tags: [Domains]
+      operationId: showDomainSpamRule
+      summary: Show a spam rule for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Domains]
+      operationId: updateDomainSpamRule
+      summary: Update a spam rule for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '200':
+          description: The updated spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Domains]
+      operationId: replaceDomainSpamRule
+      summary: Replace a spam rule for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '200':
+          description: The replaced spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Domains]
+      operationId: deleteDomainSpamRule
+      summary: Delete a spam rule for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          description: The spam rule was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v2/organizations/{organization_permalink}/ip_pool_rules:
     get:
       tags: [IP Pools]
@@ -3122,6 +3354,191 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/spam_rules:
+    get:
+      tags: [Domains]
+      operationId: listServerDomainSpamRules
+      summary: List the spam rules for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of spam rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpamRule'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Domains]
+      operationId: createServerDomainSpamRule
+      summary: Create a spam rule for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '201':
+          description: The created spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/spam_rules/{uuid}:
+    get:
+      tags: [Domains]
+      operationId: showServerDomainSpamRule
+      summary: Show a spam rule for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Domains]
+      operationId: updateServerDomainSpamRule
+      summary: Update a spam rule for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '200':
+          description: The updated spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Domains]
+      operationId: replaceServerDomainSpamRule
+      summary: Replace a spam rule for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpamRuleInput'
+      responses:
+        '200':
+          description: The replaced spam rule.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SpamRule'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Domains]
+      operationId: deleteServerDomainSpamRule
+      summary: Delete a spam rule for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          description: The spam rule was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/track_domains:
     get:

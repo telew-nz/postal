@@ -40,6 +40,13 @@ Rails.application.routes.draw do
           post "verify" => "domains#verify"
           post "check" => "domains#check"
           get "dns_records" => "domains#dns_records"
+          resources :spam_rules, only: [:index, :create]
+          scope "spam_rules/:uuid" do
+            get "" => "spam_rules#show"
+            patch "" => "spam_rules#update"
+            put "" => "spam_rules#update"
+            delete "" => "spam_rules#destroy"
+          end
         end
 
         resources :ip_pool_rules, only: [:index, :create]
@@ -68,6 +75,13 @@ Rails.application.routes.draw do
             post "verify" => "domains#verify"
             post "check" => "domains#check"
             get "dns_records" => "domains#dns_records"
+            resources :spam_rules, only: [:index, :create]
+            scope "spam_rules/:uuid" do
+              get "" => "spam_rules#show"
+              patch "" => "spam_rules#update"
+              put "" => "spam_rules#update"
+              delete "" => "spam_rules#destroy"
+            end
           end
 
           resources :track_domains, only: [:index, :create]
