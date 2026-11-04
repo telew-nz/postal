@@ -160,7 +160,7 @@ onboard_cmd() {
     done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
     if [[ -z $route_uuid ]]; then
       api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
-        "{\"name\":\"*\",\"domain_id\":$dom_id,\"endpoint_type\":\"HTTPEndpoint\",\"endpoint_uuid\":\"$http_uuid\"}"
+        "{\"name\":\"*\",\"domain_id\":$dom_id,\"spam_mode\":\"Mark\",\"endpoint_type\":\"HTTPEndpoint\",\"endpoint_uuid\":\"$http_uuid\"}"
       [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create route -> $API_STATUS ($API_BODY)"
       route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
     fi
@@ -186,7 +186,7 @@ onboard_cmd() {
     done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
     if [[ -z $route_uuid ]]; then
       api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
-        "{\"name\":\"receive-$domain\",\"domain_id\":$dom_id,\"endpoint_type\":\"AddressEndpoint\",\"endpoint_uuid\":\"$addr_uuid\"}"
+        "{\"name\":\"receive-$domain\",\"domain_id\":$dom_id,\"spam_mode\":\"Mark\",\"endpoint_type\":\"AddressEndpoint\",\"endpoint_uuid\":\"$addr_uuid\"}"
       [[ $API_STATUS == 201 || $API_STATUS == 200 ]] || die "create route -> $API_STATUS ($API_BODY)"
       route_uuid="$(printf '%s' "$API_BODY" | grep -o '"uuid":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
     fi
