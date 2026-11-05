@@ -363,7 +363,7 @@ services:
     logging: *postal-logging
     volumes:
       - ./config/rspamd/maps:/etc/rspamd/maps:ro
-      - ./config/rspamd/local.d/multimap-generated.conf:/etc/rspamd/local.d/multimap-generated.conf:ro
+      - ./config/rspamd/local.d/multimap.conf:/etc/rspamd/local.d/multimap.conf:ro
     networks:
       - postal
 

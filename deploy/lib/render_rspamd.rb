@@ -22,7 +22,11 @@ require "fileutils"
 
 work_dir = ENV.fetch("RSPAMD_RENDER_DIR", "/config/rspamd")
 maps_dir = File.join(work_dir, "maps")
-fragment = File.join(work_dir, "local.d", "multimap-generated.conf")
+# rspamd's local.d/ directory only merges a file whose name matches a base
+# config file (modules.d/multimap.conf). A custom filename like
+# multimap-generated.conf is ignored, so the module never sees our rules. It
+# must be local.d/multimap.conf.
+fragment = File.join(work_dir, "local.d", "multimap.conf")
 
 # The path to the map directory as seen by the rspamd container. The renderer
 # runs in the bootstrap container, where work_dir is /rspamd-config; but the
