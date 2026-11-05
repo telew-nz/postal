@@ -12,6 +12,7 @@ module MessageDequeuer
         handle_bounces
         increment_live_stats
         inspect_message
+        enforce_spam_rules
         fail_if_spam
         hold_if_server_development_mode
         find_route
@@ -79,7 +80,36 @@ module MessageDequeuer
       log "message inspected, headers added", spam: queued_message.message.spam?, spam_score: queued_message.message.spam_score, threat: queued_message.message.threat?
     end
 
+    # Enforce the per-domain allow/block spam rules maintained via the management
+    # API. A blocklisted sender is hard-failed (dropped). An allowlisted sender
+    # is exempt from the spam failure threshold below.
+    def enforce_spam_rules
+      sender = queued_message.message.mail_from.to_s.downcase
+      return if sender.empty?
+
+      domain = Domain.find_by(name: queued_message.message.recipient_domain)
+      return unless domain
+
+      rules = domain.spam_rules.where(enabled: true)
+      return if rules.empty?
+
+      if rules.any? { |r| r.blocklist? && r.matches?(sender) }
+        log "message is from a blocklisted sender, hard failing"
+        create_delivery "HardFail",
+                        details: "Sender is on the blocklist for #{domain.name}."
+        remove_from_queue
+        stop_processing
+        return
+      end
+
+      if rules.any? { |r| r.allowlist? && r.matches?(sender) }
+        log "message is from an allowlisted sender, bypassing spam failure"
+        @allowlisted_sender = true
+      end
+    end
+
     def fail_if_spam
+      return if @allowlisted_sender
       return if queued_message.message.spam_score < queued_message.server.spam_failure_threshold
 
       log "message has a spam score higher than the server's maxmimum, hard failing", server_threshold: queued_message.server.spam_failure_threshold

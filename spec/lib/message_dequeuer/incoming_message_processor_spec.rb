@@ -150,6 +150,69 @@ module MessageDequeuer
       end
     end
 
+    context "when the sender is on the receiving domain's blocklist" do
+      let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server) do |msg|
+          msg.mail_from = "admin@uts.nz"
+          msg.rcpt_to = "user@example.com"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: "reject")
+      end
+
+      it "logs" do
+        processor.process
+        expect(logger).to have_logged(/sender is on the blocklist/)
+      end
+
+      it "sets the message status to HardFail" do
+        processor.process
+        expect(message.reload.status).to eq "HardFail"
+      end
+
+      it "creates a HardFail delivery" do
+        processor.process
+        delivery = message.deliveries.last
+        expect(delivery).to have_attributes(status: "HardFail", details: /on the blocklist/i)
+      end
+
+      it "removes the queued message" do
+        processor.process
+        expect { queued_message.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+
+    context "when the sender is on the receiving domain's allowlist" do
+      let(:allowed_domain) { create(:domain, owner: server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server, route: route) do |msg|
+          msg.mail_from = "good@trusted.net"
+          msg.rcpt_to = "user@example.com"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: allowed_domain, kind: "allowlist", match_type: "address", value: "good@trusted.net", action: "none")
+        inspection_result = double("Result", spam_score: 100, threat: false, threat_message: nil, spam_checks: [])
+        allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+      end
+
+      it "does not hard fail despite a spam score above the failure threshold" do
+        processor.process
+        expect(message.reload.status).to_not eq "HardFail"
+      end
+
+      it "logs that the sender is allowlisted" do
+        processor.process
+        expect(logger).to have_logged(/sender is on the allowlist/)
+      end
+    end
+
     context "when the server mode is Development and the message was not manually queued" do
       before do
         server.update!(mode: "Development")
