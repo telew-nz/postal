@@ -66,6 +66,12 @@ grouped.sort.each do |domain, lists|
       "name" => "BLOCKLIST_#{domain.gsub(/[^A-Za-z0-9_]/, '_')}",
       "type" => "from",
       "map" => path,
+      # Postal does not act on rspamd's symbol "action"; it only reads the
+      # returned score against the server's spam_failure_threshold. A high
+      # score here is what turns the blocklist into a hard fail (the message is
+      # dropped in fail_if_spam), so it must exceed that threshold. The
+      # "reject" action is kept for humans / other consumers of the map.
+      "score" => 100.0,
       "action" => "reject",
       "description" => "Blocklisted sender for #{domain}"
     }
