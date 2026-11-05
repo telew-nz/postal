@@ -566,6 +566,15 @@ rspamd_cmd() {
     compose up -d rspamd
   fi
 
+  step "Preparing rspamd config directory"
+  # The renderer runs in the bootstrap container as uid 999 (the postal user),
+  # so the host directory it writes through must be writable by that uid. The
+  # directory is intentionally not in the repo: it is generated state. Create
+  # it and hand it to uid 999 so rendering never hits a permission error.
+  mkdir -p "$CONFIG_DIR/rspamd/local.d" "$CONFIG_DIR/rspamd/maps"
+  chown -R 999:999 "$CONFIG_DIR/rspamd" 2>/dev/null || \
+    warn "could not chown $CONFIG_DIR/rspamd to uid 999; rendering may fail"
+
   step "Rendering per-domain spam rules"
   # Boot the app via rails runner in the bootstrap container so DomainSpamRule
   # is loadable. The renderer writes host ./config/rspamd through the
