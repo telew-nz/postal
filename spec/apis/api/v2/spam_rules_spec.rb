@@ -37,6 +37,28 @@ RSpec.describe "Management API Spam Rules", type: :request do
       expect(build(:domain_spam_rule, match_type: "address", value: "not-an-email")).to_not be_valid
       expect(build(:domain_spam_rule, match_type: "domain", value: "maybe a domain")).to_not be_valid
       expect(build(:domain_spam_rule, match_type: "domain", value: "trusted.com")).to be_valid
+      expect(build(:domain_spam_rule, match_type: "subject", value: "*invoice*")).to be_valid
+    end
+
+    it "matches subject wildcard patterns case-insensitively" do
+      rule = create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "subject", value: "*invoice*")
+      expect(rule.matches_subject?("Your INVOICE is ready")).to be true
+      expect(rule.matches_subject?("no match here")).to be false
+
+      wildcard = create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "subject", value: "f?x")
+      expect(wildcard.matches_subject?("the fox jumps")).to be true
+      expect(wildcard.matches_subject?("the fix")).to be true
+    end
+
+    it "builds a combined regex for subject rules" do
+      create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "subject", value: "*invoice*")
+      create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "subject", value: "*promo*")
+      rules = domain.spam_rules.where(kind: "blocklist", match_type: "subject")
+      combined = DomainSpamRule.combined_subject_regex(rules)
+      expect(combined).to be_a(Regexp)
+      expect(combined.match?("big invoice")).to be true
+      expect(combined.match?("promo code")).to be true
+      expect(combined.match?("nothing")).to be false
     end
   end
 

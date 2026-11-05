@@ -44,6 +44,9 @@ grouped = Hash.new { |h, k| h[k] = { allowlist: [], blocklist: [] } }
 
 DomainSpamRule.where(enabled: true).includes(:domain).find_each do |rule|
   next unless rule.domain
+  # Subject rules are enforced app-side (incoming_message_processor.rb) and do
+  # not map to a sender multimap, so they are excluded from the rspamd maps.
+  next if rule.subject?
 
   name = rule.domain.name
   if rule.allowlist?

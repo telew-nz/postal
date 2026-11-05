@@ -759,7 +759,7 @@ components:
 
     SpamRule:
       type: object
-      description: A per-domain allowlist or blocklist rule for an address or domain.
+      description: A per-domain allowlist or blocklist rule for an address, domain, or subject.
       required: [uuid, domain_id, kind, match_type, value, action, enabled]
       properties:
         uuid:
@@ -772,10 +772,15 @@ components:
           enum: [allowlist, blocklist]
         match_type:
           type: string
-          enum: [address, domain]
+          enum: [address, domain, subject]
         value:
           type: string
-          description: The address (user@example.com) or domain (example.com) being matched.
+          description: >
+            The thing being matched. For address rules: user@example.com. For
+            domain rules: example.com. For subject rules: a wildcard pattern
+            (`*` matches any sequence, `?` any single character) matched
+            case-insensitively as a substring of the message subject; e.g.
+            `*invoice*`.
         action:
           type: string
           enum: [reject, mark_spam, add_header, none]
@@ -798,10 +803,15 @@ components:
           enum: [allowlist, blocklist]
         match_type:
           type: string
-          enum: [address, domain]
+          enum: [address, domain, subject]
         value:
           type: string
-          description: The address (user@example.com) or domain (example.com) being matched.
+          description: >
+            The thing being matched. For address rules: user@example.com. For
+            domain rules: example.com. For subject rules: a wildcard pattern
+            (`*` matches any sequence, `?` any single character) matched
+            case-insensitively as a substring of the message subject; e.g.
+            `*invoice*`.
         action:
           type: string
           enum: [reject, mark_spam, add_header, none]

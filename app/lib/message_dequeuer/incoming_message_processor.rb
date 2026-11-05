@@ -93,31 +93,65 @@ module MessageDequeuer
       rules = domain.spam_rules.where(enabled: true)
       return if rules.empty?
 
-      if rule = rules.find { |r| r.blocklist? && r.matches?(sender) }
-        case rule.action
-        when "reject"
-          log "message is from a blocklisted sender, hard failing"
-          create_delivery "HardFail",
-                          details: "Sender is on the blocklist for #{domain.name}."
-          remove_from_queue
-          stop_processing
-          return
-        when "mark_spam"
-          log "message is from a blocklisted sender, marking as spam"
-          queued_message.message.update(spam: true)
-        when "add_header"
-          log "message is from a blocklisted sender, adding header"
-          queued_message.message.append_headers("X-Postal-Spam-Rule: blocklist:#{domain.name}")
-        else
-          log "message is from a blocklisted sender (action #{rule.action || 'none'})"
-        end
+      sender_rules = rules.reject(&:subject?)
+      subject_rules = rules.select(&:subject?)
+
+      if rule = sender_rules.find { |r| r.blocklist? && r.matches?(sender) }
+        apply_blocklist_action(rule, domain, "sender")
         return
       end
 
-      if rules.any? { |r| r.allowlist? && r.matches?(sender) }
-        log "message is from an allowlisted sender, bypassing spam failure"
+      subject = subject_header
+      if subject.present? && (rule = matching_subject_rule(subject_rules, "blocklist", subject))
+        apply_blocklist_action(rule, domain, "subject")
+        return
+      end
+
+      sender_allowed = sender_rules.any? { |r| r.allowlist? && r.matches?(sender) }
+      subject_allowed = subject.present? && matching_subject_rule(subject_rules, "allowlist", subject).present?
+      if sender_allowed || subject_allowed
+        log "message matches an allowlisted rule, bypassing spam failure"
         @allowlisted_sender = true
       end
+    end
+
+    # Find the specific subject rule that matches, using a single combined regex
+    # as the fast path: if the combined regex does not match the subject, no
+    # individual rule can either, so we return early without testing each regex.
+    def matching_subject_rule(rules, kind, subject)
+      relevant = rules.select { |r| r.public_send("#{kind}?") }
+      return nil if relevant.empty?
+
+      combined = DomainSpamRule.combined_subject_regex(relevant)
+      return nil unless combined&.match?(subject)
+
+      relevant.find { |r| r.matches_subject?(subject) }
+    end
+
+    # Apply a matched blocklist rule's action. reject drops the message; the
+    # others keep it but flag it in the way the rule asks.
+    def apply_blocklist_action(rule, domain, target)
+      case rule.action
+      when "reject"
+        log "message is from a #{target} blocklisted rule, hard failing"
+        create_delivery "HardFail",
+                        details: "Matches blocklist rule for #{domain.name} (#{rule.description})."
+        remove_from_queue
+        stop_processing
+      when "mark_spam"
+        log "message is from a #{target} blocklisted rule, marking as spam"
+        queued_message.message.update(spam: true)
+      when "add_header"
+        log "message is from a #{target} blocklisted rule, adding header"
+        queued_message.message.append_headers("X-Postal-Spam-Rule: blocklist:#{domain.name} #{rule.match_type}")
+      else
+        log "message is from a #{target} blocklisted rule (action #{rule.action || 'none'})"
+      end
+    end
+
+    # The decoded Subject header, if present.
+    def subject_header
+      queued_message.message.headers["subject"]&.first.to_s
     end
 
     def fail_if_spam

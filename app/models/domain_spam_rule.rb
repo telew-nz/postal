@@ -23,7 +23,7 @@ class DomainSpamRule < ApplicationRecord
   belongs_to :domain
 
   KINDS = %w[allowlist blocklist].freeze
-  MATCH_TYPES = %w[address domain].freeze
+  MATCH_TYPES = %w[address domain subject].freeze
   ACTIONS = %w[reject mark_spam add_header none].freeze
 
   validates :kind, inclusion: { in: KINDS }
@@ -57,6 +57,37 @@ class DomainSpamRule < ApplicationRecord
     else
       false
     end
+  end
+
+  def subject?
+    match_type == "subject"
+  end
+
+  # Convert the rule's value (a wildcard pattern) into a regex source fragment.
+  # `*` matches any sequence, `?` any single character; everything else is
+  # escaped so the pattern is treated literally. Unanchored, so it matches a
+  # substring of the subject, and case-insensitive at match time.
+  def subject_regex_source
+    Regexp.escape(value.to_s).gsub(/\\\*/, ".*").gsub(/\\\?/, ".")
+  end
+
+  # Does this subject rule match the given subject line?
+  def matches_subject?(subject)
+    return false if subject.blank?
+
+    @subject_regex ||= Regexp.new(subject_regex_source, Regexp::IGNORECASE)
+    @subject_regex.match?(subject)
+  end
+
+  # Build a single combined regex for a set of subject rules (all of the same
+  # domain/kind). Testing this once is cheaper than testing each rule's regex
+  # individually, which is the common hot path during message processing. Returns
+  # nil when there are no subject rules.
+  def self.combined_subject_regex(rules)
+    sources = rules.filter_map { |rule| rule.subject_regex_source if rule.subject? }
+    return nil if sources.empty?
+
+    Regexp.new("(?:#{sources.join('|')})", Regexp::IGNORECASE)
   end
 
   def description

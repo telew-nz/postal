@@ -209,6 +209,62 @@ module MessageDequeuer
       end
     end
 
+    context "when the message subject matches a blocklist subject rule" do
+      let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server) do |msg, mail|
+          msg.mail_from = "sender@example.net"
+          msg.rcpt_to = "user@example.com"
+          mail.subject = "Your urgent invoice is ready"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "subject", value: "*invoice*", action: "reject")
+      end
+
+      it "sets the message status to HardFail" do
+        processor.process
+        expect(message.reload.status).to eq "HardFail"
+      end
+
+      it "creates a HardFail delivery" do
+        processor.process
+        delivery = message.deliveries.last
+        expect(delivery).to have_attributes(status: "HardFail", details: /blocklist rule/i)
+      end
+
+      it "removes the queued message" do
+        processor.process
+        expect { queued_message.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+
+    context "when the message subject matches a blocklist subject rule with action mark_spam" do
+      let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server, route: route) do |msg, mail|
+          msg.mail_from = "sender@example.net"
+          msg.rcpt_to = "user@example.com"
+          mail.subject = "spammy promo"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "subject", value: "*promo*", action: "mark_spam")
+        inspection_result = double("Result", spam_score: 0, threat: false, threat_message: nil, spam_checks: [])
+        allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+      end
+
+      it "marks the message as spam but does not drop it" do
+        processor.process
+        expect(message.reload.spam).to be true
+        expect(message.reload.status).to_not eq "HardFail"
+      end
+    end
+
     context "when the sender is on the receiving domain's allowlist" do
       let(:allowed_domain) { create(:domain, owner: server, name: "example.com") }
 
