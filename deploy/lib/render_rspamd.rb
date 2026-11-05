@@ -64,7 +64,7 @@ grouped.sort.each do |domain, lists|
     File.write(path, lists[:allowlist].uniq.join("\n") + "\n")
     allow_entries << {
       "name" => "ALLOWLIST_#{domain.gsub(/[^A-Za-z0-9_]/, '_')}",
-      "type" => "from",
+      "type" => "from_smtp",
       "map" => File.join(maps_container_dir, "#{domain}.allowlist.map"),
       "score" => -15.0,
       "description" => "Allowlisted sender for #{domain}"
@@ -76,7 +76,7 @@ grouped.sort.each do |domain, lists|
     File.write(path, lists[:blocklist].uniq.join("\n") + "\n")
     block_entries << {
       "name" => "BLOCKLIST_#{domain.gsub(/[^A-Za-z0-9_]/, '_')}",
-      "type" => "from",
+      "type" => "from_smtp",
       "map" => File.join(maps_container_dir, "#{domain}.blocklist.map"),
       # Postal does not act on rspamd's symbol "action"; it only reads the
       # returned score against the server's spam_failure_threshold. A high
