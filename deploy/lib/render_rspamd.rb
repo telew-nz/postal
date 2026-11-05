@@ -24,6 +24,14 @@ work_dir = ENV.fetch("RSPAMD_RENDER_DIR", "/config/rspamd")
 maps_dir = File.join(work_dir, "maps")
 fragment = File.join(work_dir, "local.d", "multimap-generated.conf")
 
+# The path to the map directory as seen by the rspamd container. The renderer
+# runs in the bootstrap container, where work_dir is /rspamd-config; but the
+# generated fragment is consumed by the rspamd container, where the maps are
+# mounted at /etc/rspamd/maps. If we wrote the bootstrap-side path into the
+# fragment, rspamd would fail to load the map and the blocklist/allowlist
+# symbols would never fire.
+maps_container_dir = ENV.fetch("RSPAMD_MAP_PATH", "/etc/rspamd/maps")
+
 FileUtils.mkdir_p(maps_dir)
 FileUtils.mkdir_p(File.join(work_dir, "local.d"))
 
@@ -53,7 +61,7 @@ grouped.sort.each do |domain, lists|
     allow_entries << {
       "name" => "ALLOWLIST_#{domain.gsub(/[^A-Za-z0-9_]/, '_')}",
       "type" => "from",
-      "map" => path,
+      "map" => File.join(maps_container_dir, "#{domain}.allowlist.map"),
       "score" => -15.0,
       "description" => "Allowlisted sender for #{domain}"
     }
@@ -65,7 +73,7 @@ grouped.sort.each do |domain, lists|
     block_entries << {
       "name" => "BLOCKLIST_#{domain.gsub(/[^A-Za-z0-9_]/, '_')}",
       "type" => "from",
-      "map" => path,
+      "map" => File.join(maps_container_dir, "#{domain}.blocklist.map"),
       # Postal does not act on rspamd's symbol "action"; it only reads the
       # returned score against the server's spam_failure_threshold. A high
       # score here is what turns the blocklist into a hard fail (the message is
