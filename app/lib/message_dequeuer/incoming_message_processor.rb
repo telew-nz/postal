@@ -93,12 +93,24 @@ module MessageDequeuer
       rules = domain.spam_rules.where(enabled: true)
       return if rules.empty?
 
-      if rules.any? { |r| r.blocklist? && r.matches?(sender) }
-        log "message is from a blocklisted sender, hard failing"
-        create_delivery "HardFail",
-                        details: "Sender is on the blocklist for #{domain.name}."
-        remove_from_queue
-        stop_processing
+      if rule = rules.find { |r| r.blocklist? && r.matches?(sender) }
+        case rule.action
+        when "reject"
+          log "message is from a blocklisted sender, hard failing"
+          create_delivery "HardFail",
+                          details: "Sender is on the blocklist for #{domain.name}."
+          remove_from_queue
+          stop_processing
+          return
+        when "mark_spam"
+          log "message is from a blocklisted sender, marking as spam"
+          queued_message.message.update(spam: true)
+        when "add_header"
+          log "message is from a blocklisted sender, adding header"
+          queued_message.message.append_headers("X-Postal-Spam-Rule: blocklist:#{domain.name}")
+        else
+          log "message is from a blocklisted sender (action #{rule.action || 'none'})"
+        end
         return
       end
 

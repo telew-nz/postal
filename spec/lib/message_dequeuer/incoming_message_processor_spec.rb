@@ -186,6 +186,29 @@ module MessageDequeuer
       end
     end
 
+    context "when the sender is on the receiving domain's blocklist with action mark_spam" do
+      let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server, route: route) do |msg|
+          msg.mail_from = "admin@uts.nz"
+          msg.rcpt_to = "user@example.com"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: "mark_spam")
+        inspection_result = double("Result", spam_score: 0, threat: false, threat_message: nil, spam_checks: [])
+        allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+      end
+
+      it "marks the message as spam but does not drop it" do
+        processor.process
+        expect(message.reload.spam).to be true
+        expect(message.reload.status).to_not eq "HardFail"
+      end
+    end
+
     context "when the sender is on the receiving domain's allowlist" do
       let(:allowed_domain) { create(:domain, owner: server, name: "example.com") }
 
