@@ -819,6 +819,34 @@ components:
         enabled:
           type: boolean
 
+    SpamRuleStatistics:
+      type: object
+      description: Match statistics for a single spam rule.
+      required: [uuid, kind, match_type, value, action, matched_count, by_action]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [allowlist, blocklist]
+        match_type:
+          type: string
+          enum: [address, domain, subject]
+        value:
+          type: string
+        action:
+          type: string
+          enum: [reject, mark_spam, add_header, none]
+        matched_count:
+          type: integer
+          description: Total number of messages matched by this rule.
+        by_action:
+          type: object
+          additionalProperties:
+            type: integer
+          description: Count of matched messages per action that was applied.
+
     SpamFeedbackInput:
       type: object
       required: [verdict]
@@ -2494,6 +2522,34 @@ paths:
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
 
+  /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/spam_rules/statistics:
+    get:
+      tags: [Domains]
+      operationId: listDomainSpamRuleStatistics
+      summary: List per-rule match statistics for a domain owned by an organization
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: Statistics for the domain's enabled spam rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpamRuleStatistics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v2/organizations/{organization_permalink}/domains/{domain_uuid}/spam_rules/{uuid}:
     get:
       tags: [Domains]
@@ -3447,6 +3503,35 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/spam_rules/statistics:
+    get:
+      tags: [Domains]
+      operationId: listServerDomainSpamRuleStatistics
+      summary: List per-rule match statistics for a domain assigned to a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/DomainUUID'
+      responses:
+        '200':
+          description: Statistics for the domain's enabled spam rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SpamRuleStatistics'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/domains/{domain_uuid}/spam_rules/{uuid}:
     get:

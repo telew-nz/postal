@@ -107,6 +107,27 @@ RSpec.describe "Management API Spam Rules", type: :request do
     end
   end
 
+  describe "statistics" do
+    let!(:org_server) { create(:server, organization: organization) }
+
+    it "returns per-rule match counts" do
+      rule = create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "address", value: "bad@example.com", action: "reject")
+
+      message_db = double("MessageDB", database_name: "postal-test-message-db")
+      allow(message_db).to receive(:query).and_return([
+        { "matched_rule_action" => "reject", "n" => 2 }
+      ])
+      allow(org_server).to receive(:message_db).and_return(message_db)
+
+      get org_path("/statistics"), headers: api_headers(token)
+      expect(response.status).to eq(200)
+      stats = parsed_data.first
+      expect(stats["uuid"]).to eq(rule.uuid)
+      expect(stats["matched_count"]).to eq(2)
+      expect(stats["by_action"]["reject"]).to eq(2)
+    end
+  end
+
   describe "server scoped spam rules" do
     let!(:rule) { create(:domain_spam_rule, domain: server_domain, kind: "blocklist", value: "bad@server.com") }
 

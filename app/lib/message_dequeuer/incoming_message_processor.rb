@@ -129,8 +129,11 @@ module MessageDequeuer
     end
 
     # Apply a matched blocklist rule's action. reject drops the message; the
-    # others keep it but flag it in the way the rule asks.
+    # others keep it but flag it in the way the rule asks. The rule is recorded
+    # on the message so per-rule statistics can be aggregated.
     def apply_blocklist_action(rule, domain, target)
+      queued_message.message.update(matched_rule_id: rule.id, matched_rule_action: rule.action)
+
       case rule.action
       when "reject"
         log "message is from a #{target} blocklisted rule, hard failing"
