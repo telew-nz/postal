@@ -83,6 +83,46 @@ onboard_cmd() {
   fi
   ok "server permalink: $srv_permalink"
 
+  # --- 2b. server-scoped key for this integration ---
+  # The per-integration server key is bound to this server and limited to the
+  # workspace scopes. The platform stores it encrypted at rest and uses it for
+  # every workspace-scoped call; it cannot open any other server.
+  step "Ensuring server-scoped API key"
+  api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink"
+  [[ $API_STATUS == 200 ]] || die "get server -> $API_STATUS ($API_BODY)"
+  srv_id="$(printf '%s' "$API_BODY" | grep -o '"id":[0-9]*' | head -1 | sed 's/.*:[^0-9]*//; s/[^0-9]//g')"
+  local srv_key_name="${srv_name}-integration"
+  api_request GET /api/v2/tokens
+  local srv_key_uuid="" got_srv_key=false
+  local tl
+  while IFS= read -r tl; do
+    [[ -n $tl ]] || continue
+    local tn tt tu
+    tn="$(printf '%s' "$tl" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
+    tt="$(printf '%s' "$tl" | sed -n 's/.*"tier":"\([^"]*\)".*/\1/p')"
+    tu="$(printf '%s' "$tl" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
+    if [[ $tn == "$srv_key_name" && $tt == "server" ]]; then
+      srv_key_uuid="$tu"; got_srv_key=true; break
+    fi
+  done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
+
+  if [[ $got_srv_key == false ]]; then
+    api_request POST /api/v2/tokens "{\"name\":\"$srv_key_name\",\"tier\":\"server\",\"server_id\":$srv_id,\"scope\":\"domains,spam,routes\"}"
+    [[ $API_STATUS == 201 ]] || die "create server key -> $API_STATUS ($API_BODY)"
+    ok "server-scoped key created: $srv_key_name"
+    # The plaintext key is returned once. It is the per-integration server key
+    # the platform stores encrypted at rest; it cannot be read again.
+    local srv_key
+    srv_key="$(printf '%s' "$API_BODY" | grep -o '"key":"[^"]*"' | head -1 | sed 's/.*:"//; s/"$//')"
+    log ""
+    log "  Server-scoped API key ($srv_key_name):"
+    log "  ${C_BOLD}${srv_key}${C_RESET}"
+    log "  Store this in the integration's encrypted secret store."
+    log ""
+  else
+    ok "server-scoped key already exists: $srv_key_name"
+  fi
+
   # --- 3. domain under server ---
   step "Ensuring domain under server"
   local dom_uuid="" dom_id=""

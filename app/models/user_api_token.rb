@@ -38,10 +38,51 @@ class UserAPIToken < ApplicationRecord
   # token to be identified by a user without revealing the token itself.
   KEY_PREVIEW_LENGTH = 8
 
+  # The key tier. A "site" key is the instance-level key (scope "all", no
+  # server binding). A "server" key is bound to one server and limited to a
+  # scope.
+  TIERS = %w[site server].freeze
+
+  # The endpoint scopes a key may be granted. "all" is the site key. A server
+  # key may carry a comma-separated combination (e.g. "domains,spam,routes").
+  SCOPES = %w[all domains spam routes send].freeze
+
   belongs_to :user
+  belongs_to :server, optional: true
 
   validates :name, presence: true
   validates :key, presence: true, uniqueness: { case_sensitive: false }
+  validates :tier, inclusion: { in: TIERS }
+  validate :validate_scope
+  validate :server_key_requires_server
+
+  # A server key must be bound to a server; a site key must not be.
+  def server_key_requires_server
+    if tier == "server" && server_id.nil?
+      errors.add :server_id, "is required for a server-scoped key"
+    elsif tier == "site" && server_id.present?
+      errors.add :server_id, "must be blank for a site key"
+    end
+  end
+
+  def validate_scope
+    requested = scope.to_s.split(",").map(&:strip)
+    unless requested.present? && (requested - SCOPES).empty?
+      errors.add :scope, "must be one of #{SCOPES.join(', ')} (or a comma-separated combination)"
+      return
+    end
+    if tier == "site" && requested != ["all"]
+      errors.add :scope, "must be 'all' for a site key"
+    end
+  end
+
+  # Does this key allow the given endpoint scope? Site keys allow everything;
+  # server keys allow it if any of their comma-separated scopes match.
+  def allows_scope?(requested_scope)
+    return true if scope == "all"
+
+    scope.to_s.split(",").map(&:strip).include?(requested_scope.to_s)
+  end
 
   before_validation :generate_key
 

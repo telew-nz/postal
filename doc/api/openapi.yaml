@@ -376,13 +376,27 @@ components:
 
     UserAPIToken:
       type: object
-      required: [uuid, name, key_prefix, created_at]
+      required: [uuid, name, tier, scope, key_prefix, created_at]
       properties:
         uuid:
           type: string
           format: uuid
         name:
           type: string
+        tier:
+          type: string
+          enum: [site, server]
+          description: |
+            site keys are instance-level (scope all, no server binding). server
+            keys are bound to one server and limited to a scope.
+        scope:
+          type: string
+          enum: [all, domains, spam, routes, send]
+        server_id:
+          type:
+            - integer
+            - 'null'
+          description: The server a server-tier key is bound to; null for site keys.
         key_prefix:
           type: string
           description: |

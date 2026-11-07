@@ -42,6 +42,7 @@ module API
 
       before_action :check_api_enabled
       before_action :authenticate_api_token
+      before_action :enforce_token_scope
       before_action :set_utc_timezone
 
       rescue_from ActiveRecord::RecordNotFound, with: :render_not_found_error
@@ -116,6 +117,52 @@ module API
         token.use
         @current_api_token = token
       end
+
+      # Enforce the token's tier and scope. Site keys pass through unchanged. A
+      # server key must be used on a server-scoped endpoint for the server it is
+      # bound to, and only on controllers its scope permits.
+      #
+      # @return [void]
+      def enforce_token_scope
+        token = @current_api_token
+        return unless token
+        return if token.tier == "site"
+
+        unless params[:server_permalink].present?
+          render_error(:forbidden, "TokenScope",
+                       "This is a server-scoped key; it can only be used on server-scoped endpoints.")
+          return
+        end
+
+        server = Server.find_by(permalink: params[:server_permalink])
+        if server.nil? || server.id != token.server_id
+          render_error(:forbidden, "TokenScope",
+                       "This key is not authorized for this server.")
+          return
+        end
+
+        scope = SCOPE_FOR_CONTROLLER[controller_name]
+        if scope.nil? || !token.allows_scope?(scope)
+          render_error(:forbidden, "TokenScope",
+                       "This key's scope does not allow #{controller_name}.")
+        end
+      end
+
+      # Map a v2 controller to the server-key scope it belongs to. Controllers
+      # not listed are not reachable by any server key (site tier only).
+      SCOPE_FOR_CONTROLLER = {
+        "domains"         => "domains",
+        "track_domains"   => "domains",
+        "routes"          => "routes",
+        "credentials"     => "routes",
+        "http_endpoints"  => "routes",
+        "smtp_endpoints"  => "routes",
+        "address_endpoints" => "routes",
+        "webhooks"        => "routes",
+        "spam_rules"      => "spam",
+        "spam_feedback"   => "spam",
+        "messages"        => "spam"
+      }.freeze
 
       # The management API always renders times in UTC so that responses are
       # predictable regardless of who is asking for them.

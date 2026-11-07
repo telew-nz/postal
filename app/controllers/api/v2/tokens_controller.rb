@@ -12,8 +12,19 @@ module API
       end
 
       def create
+        tier = params[:tier].presence || "site"
+        if tier == "server" && !current_user.admin?
+          render_error(:forbidden, "NotPermitted", "Only administrators can create server-scoped API tokens.")
+          return
+        end
+
         token = current_user.api_tokens.build
         token.name = params.require(:name)
+        token.tier = tier
+        token.scope = params[:scope] if params[:scope].present?
+        if params[:server_id].present?
+          token.server_id = params[:server_id]
+        end
         if params[:expires_at].present?
           expires = parse_expires_at
           if expires.nil?

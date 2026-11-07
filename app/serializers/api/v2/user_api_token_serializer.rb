@@ -8,6 +8,9 @@ module API
         json = {
           uuid: record.uuid,
           name: record.name,
+          tier: record.tier,
+          scope: record.scope,
+          server_id: record.server_id,
           key_prefix: record.key_prefix,
           last_used_at: iso8601(record.last_used_at),
           expires_at: iso8601(record.expires_at),

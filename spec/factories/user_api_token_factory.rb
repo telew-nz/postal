@@ -32,5 +32,21 @@ FactoryBot.define do
     trait :revoked do
       revoked_at { Time.now }
     end
+
+    trait :site do
+      tier { "site" }
+      scope { "all" }
+      server_id { nil }
+    end
+
+    trait :server do
+      tier { "server" }
+      scope { "domains" }
+    end
+
+    trait :spam_scope do
+      tier { "server" }
+      scope { "spam" }
+    end
   end
 end

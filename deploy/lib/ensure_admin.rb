@@ -67,7 +67,7 @@ token = force_new_token ? nil : user.api_tokens.active.find_by(name: token_name)
 plain_key = nil
 
 if token.nil?
-  token = user.api_tokens.create!(name: token_name)
+  token = user.api_tokens.create!(name: token_name, tier: "site", scope: "all")
   plain_key = token.plain_key
 end
 
