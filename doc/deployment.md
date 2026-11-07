@@ -329,6 +329,30 @@ Idempotent — an existing administrator and an existing active token of the sam
 name are left alone. The token name matters more than it looks: only the digest is
 stored, so `POSTAL_TOKEN_NAME` is the only handle on it afterwards.
 
+### Two-tier API keys
+
+Since this change, the management API distinguishes two key tiers:
+
+* **Site key** — tier `site`, scope `all`, no server binding. This is the key
+  `./deploy.sh admin` mints. It is the instance-level key: it can create
+  organizations, servers, IP pools, tokens, and instance-wide reads. Store it in
+  the Telew API environment (next to the webhook secret); never in a database row
+  and never in the browser. It is used only behind the platform-admin guard.
+
+* **Server key** — tier `server`, bound to one server, scope limited to a
+  comma-separated combination of `domains`, `spam`, `routes`, (and `send`). It is
+  refused by the API outside its bound server, and only on the controllers its
+  scope permits. `./deploy.sh onboard` mints one per integration and prints the
+  plaintext **once**; the Telew API stores it encrypted at rest in the integration
+  row and uses it for every workspace-scoped call. A missing check in Telew cannot
+  reach another tenant: the key in one integration's row does not open any other
+  server.
+
+A token's effective access is now a combination of its own tier/server/scope (what
+Postal enforces) and the user who owns it (org/admin rights). Scoped tokens are
+created through `POST /api/v2/tokens` with `tier`, `server_id` and `scope`; only
+an administrator may create a server-tier token.
+
 ## 6. `dns` — publish the records
 
 ```bash
