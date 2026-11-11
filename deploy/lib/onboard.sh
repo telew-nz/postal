@@ -91,6 +91,7 @@ onboard_cmd() {
   api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink"
   [[ $API_STATUS == 200 ]] || die "get server -> $API_STATUS ($API_BODY)"
   srv_id="$(printf '%s' "$API_BODY" | grep -o '"id":[0-9]*' | head -1 | sed 's/.*:[^0-9]*//; s/[^0-9]//g')"
+  [[ -n $srv_id ]] || die "the server response carries no id, so a server key cannot be bound to it ($API_BODY)"
   local srv_key_name="${srv_name}-integration"
   api_request GET /api/v2/tokens
   local srv_key_uuid="" got_srv_key=false
@@ -107,7 +108,7 @@ onboard_cmd() {
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
 
   if [[ $got_srv_key == false ]]; then
-    api_request POST /api/v2/tokens "{\"name\":\"$srv_key_name\",\"tier\":\"server\",\"server_id\":$srv_id,\"scope\":\"domains,spam,routes\"}"
+    api_request POST /api/v2/tokens "{\"name\":\"$srv_key_name\",\"tier\":\"server\",\"server_id\":$srv_id,\"scope\":\"domains,spam,routes,messages\"}"
     [[ $API_STATUS == 201 ]] || die "create server key -> $API_STATUS ($API_BODY)"
     ok "server-scoped key created: $srv_key_name"
     # The plaintext key is returned once. It is the per-integration server key
@@ -182,12 +183,15 @@ onboard_cmd() {
     # the default endpoint, making it the default route for all addresses on the
     # domain.
     api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
+    # A server can hold several domains, each with its own wildcard route, so a
+    # route only counts when it is this domain's.
     while IFS= read -r r; do
       [[ -n $r ]] || continue
-      local rn ru
+      local rn ru rd
       rn="$(printf '%s' "$r" | sed -n 's/.*"name":"\([^"]*\)".*/\1/p')"
       ru="$(printf '%s' "$r" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
-      if [[ $rn == "*" ]]; then route_uuid="$ru"; break; fi
+      rd="$(printf '%s' "$r" | sed -n 's/.*"domain_uuid":"\([^"]*\)".*/\1/p')"
+      if [[ $rn == "*" && $rd == "$dom_uuid" ]]; then route_uuid="$ru"; break; fi
     done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
     if [[ -z $route_uuid ]]; then
       api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
@@ -223,9 +227,10 @@ onboard_cmd() {
     api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes"
     while IFS= read -r r; do
       [[ -n $r ]] || continue
-      local ru
+      local ru rd
       ru="$(printf '%s' "$r" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
-      if [[ -n $ru ]]; then route_uuid="$ru"; break; fi
+      rd="$(printf '%s' "$r" | sed -n 's/.*"domain_uuid":"\([^"]*\)".*/\1/p')"
+      if [[ -n $ru && $rd == "$dom_uuid" ]]; then route_uuid="$ru"; break; fi
     done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
     if [[ -z $route_uuid ]]; then
       api_request POST "/api/v2/organizations/$org_permalink/servers/$srv_permalink/routes" \
@@ -240,18 +245,17 @@ onboard_cmd() {
   step "Ensuring an API credential"
   local cred_uuid="" cred_key=""
   api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/credentials"
+  # Only a credential of type API is the key the legacy send API accepts; an
+  # SMTP credential's key is a password for a different door.
   local c
-  local first_uuid=""
   while IFS= read -r c; do
     [[ -n $c ]] || continue
     local cu ct
     cu="$(printf '%s' "$c" | sed -n 's/.*"uuid":"\([^"]*\)".*/\1/p')"
     ct="$(printf '%s' "$c" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')"
     [[ -n $cu ]] || continue
-    [[ -z $first_uuid ]] && first_uuid="$cu"
     if [[ $ct == API ]]; then cred_uuid="$cu"; break; fi
   done <<<"$(printf '%s' "$API_BODY" | sed 's/},{/}\n{/g' | grep -o '{[^{}]*"uuid"[^{}]*}' || true)"
-  [[ -n $cred_uuid ]] || cred_uuid="$first_uuid"
   if [[ -n $cred_uuid ]]; then
     # The list endpoint redacts keys, so fetch the key via show.
     api_request GET "/api/v2/organizations/$org_permalink/servers/$srv_permalink/credentials/$cred_uuid"
