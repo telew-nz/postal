@@ -21,7 +21,7 @@ module API
       end
 
       def create
-        new_webhook = server.webhooks.build(resource_params(:name, :url, :all_events, :enabled, :events))
+        new_webhook = server.webhooks.build(resource_params(:name, :url, :all_events, :enabled, { events: [] }))
         if new_webhook.save
           render_created(WebhookSerializer.new(new_webhook).as_json)
         else
@@ -30,7 +30,7 @@ module API
       end
 
       def update
-        if webhook.update(resource_params(:name, :url, :all_events, :enabled, :events))
+        if webhook.update(resource_params(:name, :url, :all_events, :enabled, { events: [] }))
           render_data(WebhookSerializer.new(webhook).as_json)
         else
           render_validation_error(webhook, "The webhook could not be updated.")

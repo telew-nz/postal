@@ -86,6 +86,13 @@ module API
       # for a specific number.
       DEFAULT_PER_PAGE = 50
 
+      # The highest page number which is honoured. A page number is multiplied
+      # by the page size to make an OFFSET, and a number near the top of a
+      # 64-bit integer overflows that into SQL the database refuses, which the
+      # client sees as a 500. No real collection reaches this page, so anything
+      # beyond it is answered as this page (an empty one).
+      MAX_PAGE = 1_000_000
+
       # Ensure the management API has been enabled in the configuration. This
       # allows an installation to completely disable this functionality.
       #
@@ -315,7 +322,7 @@ module API
       # @return [Integer]
       def pagination_page
         page = params[:page].to_i
-        [page, 1].max
+        page.clamp(1, MAX_PAGE)
       end
 
       # The number of records per page which has been requested by the client.

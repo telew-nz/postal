@@ -19,6 +19,16 @@ RSpec.describe "Management API Organizations", type: :request do
       expect(parsed_pagination).to include("page" => 1, "per_page" => 50, "total" => 1, "total_pages" => 1)
     end
 
+    it "answers a page number too large to turn into an offset with an empty page" do
+      organization
+
+      get "/api/v2/organizations", headers: api_headers(token), params: { page: "9223372036854775808" }
+
+      expect(response.status).to eq(200)
+      expect(parsed_data).to eq([])
+      expect(parsed_pagination).to include("page" => 1_000_000, "total" => 1)
+    end
+
     it "returns every organization for an administrator" do
       admin = create(:user, :admin)
       admin_token = create(:user_api_token, user: admin)

@@ -39,7 +39,7 @@ info:
     ## Out of scope
 
     This API does not expose the global administrative surface (users, invites,
-    IP pools and IP addresses themselves, worker roles), webhooks or statistics.
+    IP pools and IP addresses themselves, worker roles) or statistics.
     The message sending API remains at `/api/v1` and is documented separately.
   contact:
     name: Postal
@@ -73,6 +73,8 @@ tags:
     description: Incoming mail routing rules.
   - name: Endpoints
     description: HTTP, SMTP and address endpoints.
+  - name: Webhooks
+    description: Notifications of a mail server's message events, posted to a URL.
   - name: IP Pools
     description: IP pools and IP pool routing rules.
   - name: Messages
@@ -1039,6 +1041,40 @@ components:
           type: string
           format: date-time
 
+    Webhook:
+      type: object
+      required: [uuid, name, url, all_events, enabled, events]
+      properties:
+        uuid:
+          type: string
+          format: uuid
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        all_events:
+          type: boolean
+          description: When true the webhook receives every event and `events` is empty.
+        enabled:
+          type: boolean
+        events:
+          type: array
+          items:
+            type: string
+          description: The events the webhook receives when `all_events` is false.
+        last_used_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
     SMTPEndpoint:
       type: object
       required: [uuid, name, hostname]
@@ -1700,6 +1736,46 @@ components:
           type: string
           format: uuid
         additional_route_endpoints_array:
+          type: array
+          items:
+            type: string
+
+    WebhookInput:
+      type: object
+      description: The properties accepted when creating a webhook.
+      required: [name, url]
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        all_events:
+          type: boolean
+          default: false
+        enabled:
+          type: boolean
+          default: true
+        events:
+          type: array
+          items:
+            type: string
+          description: The events to receive. Ignored when `all_events` is true.
+
+    WebhookUpdateInput:
+      type: object
+      description: The properties accepted when updating a webhook.
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        all_events:
+          type: boolean
+        enabled:
+          type: boolean
+        events:
           type: array
           items:
             type: string
@@ -4454,6 +4530,187 @@ paths:
       tags: [Endpoints]
       operationId: deleteHTTPEndpoint
       summary: Delete an HTTP endpoint
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/webhooks:
+    get:
+      tags: [Webhooks]
+      operationId: listWebhooks
+      summary: List webhooks for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A paginated list of webhooks.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Webhook'
+                  pagination:
+                    $ref: '#/components/schemas/Pagination'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Webhooks]
+      operationId: createWebhook
+      summary: Create a webhook for a server
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookInput'
+      responses:
+        '201':
+          description: The created webhook.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Webhook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+
+  /api/v2/organizations/{organization_permalink}/servers/{server_permalink}/webhooks/{uuid}:
+    get:
+      tags: [Webhooks]
+      operationId: showWebhook
+      summary: Show a webhook
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      responses:
+        '200':
+          description: The webhook.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Webhook'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Webhooks]
+      operationId: updateWebhook
+      summary: Update a webhook
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookUpdateInput'
+      responses:
+        '200':
+          description: The updated webhook.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Webhook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    put:
+      tags: [Webhooks]
+      operationId: replaceWebhook
+      summary: Update a webhook
+      description: Identical to the `PATCH` operation.
+      parameters:
+        - $ref: '#/components/parameters/OrganizationPermalink'
+        - $ref: '#/components/parameters/ServerPermalink'
+        - $ref: '#/components/parameters/UUID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookUpdateInput'
+      responses:
+        '200':
+          description: The updated webhook.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Webhook'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+    delete:
+      tags: [Webhooks]
+      operationId: deleteWebhook
+      summary: Delete a webhook
       parameters:
         - $ref: '#/components/parameters/OrganizationPermalink'
         - $ref: '#/components/parameters/ServerPermalink'
