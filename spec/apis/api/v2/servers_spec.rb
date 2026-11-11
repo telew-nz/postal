@@ -67,6 +67,13 @@ RSpec.describe "Management API Servers", type: :request do
       )
     end
 
+    it "exposes the integer ID which a server-tier token's server_id refers to" do
+      get path("/#{server.permalink}"), headers: api_headers(token)
+
+      expect(response.status).to eq(200)
+      expect(parsed_data["id"]).to eq(server.id)
+    end
+
     it "returns a 404 for a server which is not in the organization" do
       get path("/#{create(:server).permalink}"), headers: api_headers(token)
 

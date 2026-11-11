@@ -340,9 +340,16 @@ Since this change, the management API distinguishes two key tiers:
   and never in the browser. It is used only behind the platform-admin guard.
 
 * **Server key** — tier `server`, bound to one server, scope limited to a
-  comma-separated combination of `domains`, `spam`, `routes`, (and `send`). It is
-  refused by the API outside its bound server, and only on the controllers its
-  scope permits. `./deploy.sh onboard` mints one per integration and prints the
+  comma-separated combination of `domains`, `spam`, `routes`, `messages` (and
+  `send`). It is refused by the API outside its bound server, and only on the
+  controllers its scope permits. The server is the one in the organization named
+  by the request: a permalink is only unique within its organization, so two
+  organizations may both have a server called `mail` and neither key opens the
+  other. `messages` is separate from `spam`: it opens every message the server
+  holds, which a key that only maintains spam rules does not need. A server key
+  never inherits its minting administrator's exemption from domain verification:
+  a domain created with it starts unverified, and the API returns the TXT value
+  that proves it (`dns_verification_string`). `./deploy.sh onboard` mints one per integration and prints the
   plaintext **once**; the Telew API stores it encrypted at rest in the integration
   row and uses it for every workspace-scoped call. A missing check in Telew cannot
   reach another tenant: the key in one integration's row does not open any other

@@ -6,6 +6,10 @@ module API
 
       def as_json(*)
         {
+          # The integer ID is exposed because minting a server-tier API token
+          # takes the server's `server_id` rather than its UUID or permalink.
+          # Without this a client has no way to discover a valid one.
+          id: record.id,
           uuid: record.uuid,
           permalink: record.permalink,
           full_permalink: record.full_permalink,

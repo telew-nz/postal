@@ -134,8 +134,7 @@ module API
           return
         end
 
-        server = Server.find_by(permalink: params[:server_permalink])
-        if server.nil? || server.id != token.server_id
+        unless token_bound_to_requested_server?(token)
           render_error(:forbidden, "TokenScope",
                        "This key is not authorized for this server.")
           return
@@ -146,6 +145,25 @@ module API
           render_error(:forbidden, "TokenScope",
                        "This key's scope does not allow #{controller_name}.")
         end
+      end
+
+      # Is the server named by this request the one the key is bound to?
+      #
+      # A server's permalink is only unique within its organization, so the
+      # server is resolved the way the controllers resolve it: the organization
+      # named in the path first, then the server inside it. Looking the server up
+      # by permalink alone would compare the key against whichever organization's
+      # server of that name the database happened to return, and then let the
+      # request through to a different one.
+      #
+      # @param [UserAPIToken] token
+      # @return [Boolean]
+      def token_bound_to_requested_server?(token)
+        organization = Organization.present.find_by(permalink: params[:organization_permalink])
+        return false if organization.nil?
+
+        server = organization.servers.present.find_by(permalink: params[:server_permalink])
+        server.present? && server.id == token.server_id
       end
 
       # Map a v2 controller to the server-key scope it belongs to. Controllers
@@ -161,7 +179,7 @@ module API
         "webhooks"        => "routes",
         "spam_rules"      => "spam",
         "spam_feedback"   => "spam",
-        "messages"        => "spam"
+        "messages"        => "messages"
       }.freeze
 
       # The management API always renders times in UTC so that responses are

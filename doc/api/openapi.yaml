@@ -391,7 +391,11 @@ components:
             keys are bound to one server and limited to a scope.
         scope:
           type: string
-          enum: [all, domains, spam, routes, send]
+          description: |
+            One of all, domains, spam, routes, messages or send, or a
+            comma-separated combination for a server key (for example
+            "domains,spam,routes,messages"). "messages" opens the server's
+            messages; "spam" covers spam rules and spam feedback only.
         server_id:
           type:
             - integer
@@ -469,8 +473,11 @@ components:
 
     Server:
       type: object
-      required: [uuid, permalink, name, mode]
+      required: [id, uuid, permalink, name, mode]
       properties:
+        id:
+          type: integer
+          description: The integer ID which a server-tier API token's `server_id` refers to.
         uuid:
           type: string
           format: uuid
@@ -619,6 +626,14 @@ components:
           type:
             - string
             - 'null'
+        dns_verification_string:
+          type:
+            - string
+            - 'null'
+          description: >-
+            The value of the TXT record to publish at the domain's apex to prove
+            control of it. Null once the domain is verified, and for a domain
+            which is verified by e-mail.
         verified_at:
           type:
             - string
