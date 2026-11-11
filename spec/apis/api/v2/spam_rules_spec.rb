@@ -113,11 +113,11 @@ RSpec.describe "Management API Spam Rules", type: :request do
     it "returns per-rule match counts" do
       rule = create(:domain_spam_rule, domain: domain, kind: "blocklist", match_type: "address", value: "bad@example.com", action: "reject")
 
-      message_db = double("MessageDB", database_name: "postal-test-message-db")
-      allow(message_db).to receive(:query).and_return([
-        { "matched_rule_action" => "reject", "n" => 2 }
-      ])
-      allow(org_server).to receive(:message_db).and_return(message_db)
+      2.times do
+        message = MessageFactory.incoming(org_server)
+        message.update(matched_rule_id: rule.id, matched_rule_action: "reject")
+      end
+      MessageFactory.incoming(org_server)
 
       get org_path("/statistics"), headers: api_headers(token)
       expect(response.status).to eq(200)

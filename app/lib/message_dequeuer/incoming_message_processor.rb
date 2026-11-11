@@ -11,8 +11,8 @@ module MessageDequeuer
       catch_stops do
         handle_bounces
         increment_live_stats
-        inspect_message
         enforce_spam_rules
+        inspect_message
         fail_if_spam
         hold_if_server_development_mode
         find_route
@@ -65,7 +65,10 @@ module MessageDequeuer
       queued_message.message.inspect_message
       return unless queued_message.message.inspected
 
-      is_spam = queued_message.message.spam_score > queued_message.server.spam_threshold
+      # A sender the receiving domain has allowlisted is never marked as spam,
+      # whatever the scanner scored the message.
+      is_spam = !@allowlisted_sender &&
+                queued_message.message.spam_score > queued_message.server.spam_threshold
       if is_spam
         queued_message.message.update(spam: true)
         log "message is spam (scored #{queued_message.message.spam_score}, threshold is #{queued_message.server.spam_threshold})"
@@ -81,13 +84,20 @@ module MessageDequeuer
     end
 
     # Enforce the per-domain allow/block spam rules maintained via the management
-    # API. A blocklisted sender is hard-failed (dropped). An allowlisted sender
-    # is exempt from the spam failure threshold below.
+    # API. A blocklisted sender gets the rule's action (reject drops the
+    # message). An allowlisted sender is neither marked as spam nor failed on
+    # the spam failure threshold.
+    #
+    # This is the only place the rules are applied, and it runs before the
+    # message is scanned. The rules belong to one server's domain, and here the
+    # receiving server is known. A spam scanner shared by the whole installation
+    # only sees a sender and a score: a rule rendered into it would apply to
+    # every server's mail and could not honour the rule's action.
     def enforce_spam_rules
       sender = queued_message.message.mail_from.to_s.downcase
       return if sender.empty?
 
-      domain = Domain.find_by(name: queued_message.message.recipient_domain)
+      domain = spam_rule_domain
       return unless domain
 
       rules = domain.spam_rules.where(enabled: true)
@@ -110,9 +120,21 @@ module MessageDequeuer
       sender_allowed = sender_rules.any? { |r| r.allowlist? && r.matches?(sender) }
       subject_allowed = subject.present? && matching_subject_rule(subject_rules, "allowlist", subject).present?
       if sender_allowed || subject_allowed
-        log "message matches an allowlisted rule, bypassing spam failure"
+        log "message matches an allowlisted rule, bypassing spam marking and failure"
         @allowlisted_sender = true
       end
+    end
+
+    # The domain whose rules apply to this message: the recipient's domain as
+    # the receiving server holds it, or as that server's organization does. A
+    # domain's name is only unique per owner, so a lookup by name alone would
+    # let another server's rules for the same name decide this server's mail.
+    def spam_rule_domain
+      name = queued_message.message.recipient_domain
+      return nil if name.blank?
+
+      server = queued_message.server
+      server.domains.find_by(name: name) || server.organization.domains.find_by(name: name)
     end
 
     # Find the specific subject rule that matches, using a single combined regex

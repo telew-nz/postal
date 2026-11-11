@@ -577,14 +577,15 @@ Optional .env overrides:
 USAGE
 }
 
-# ./deploy.sh rspamd -- enable rspamd, render per-domain rules, reload.
+# ./deploy.sh rspamd -- enable rspamd, write its fragment, reload.
 #
 # Opts the stack into rspamd spam inspection: sets RSPAMD_ENABLED=true in .env,
-# starts the rspamd service, renders the per-domain allow/block maps from the
-# management database, and reloads rspamd so the new rules are live.
+# starts the rspamd service, writes the (empty) multimap fragment it mounts and
+# reloads rspamd. Per-domain allow/block rules are not rendered into rspamd:
+# Postal applies them itself, per receiving server (lib/render_rspamd.rb).
 #
 # Optional flags:
-#   --render-only   only regenerate the maps and reload; assume already enabled.
+#   --render-only   only rewrite the fragment and reload; assume already enabled.
 
 rspamd_cmd() {
   local render_only=false
@@ -615,15 +616,15 @@ rspamd_cmd() {
   chown -R 999:999 "$CONFIG_DIR/rspamd" 2>/dev/null || \
     warn "could not chown $CONFIG_DIR/rspamd to uid 999; rendering may fail"
 
-  step "Rendering per-domain spam rules"
+  step "Writing the rspamd fragment"
   # Boot the app via rails runner in the bootstrap container so DomainSpamRule
   # is loadable. The renderer writes host ./config/rspamd through the
   # /rspamd-config mount, which the rspamd service binds into /etc/rspamd.
   compose_setup run --rm -T \
     -e RSPAMD_RENDER_DIR=/rspamd-config \
     bootstrap bundle exec rails runner /deploy-lib/render_rspamd.rb \
-    || die "could not render rspamd maps"
-  ok "rules rendered"
+    || die "could not write the rspamd fragment"
+  ok "fragment written (per-domain rules are applied by Postal, not rspamd)"
 
   step "Reloading rspamd"
   if service_running rspamd; then
@@ -646,14 +647,15 @@ rspamd_usage() {
   cat <<'USAGE'
 Usage: ./deploy.sh rspamd [--render-only]
 
-Enable rspamd and render per-domain spam rules into live rspamd maps.
+Enable rspamd spam scoring for the stack.
 
-  --render-only   Only regenerate the maps and reload; do not change .env or
-                  start the service.
+  --render-only   Only rewrite the rspamd fragment and reload; do not change
+                  .env or start the service.
 
-The per-domain allow/block lists created through the management API
-(/api/v2/.../spam_rules) are rendered into rspamd multimap files and rspamd is
-reloaded so the rules take effect without restarting the stack.
+rspamd scores messages. The per-domain allow/block lists created through the
+management API are applied by Postal itself, for the server which receives the
+message, so they are not rendered into rspamd. Running this also removes the
+sender maps an earlier version rendered.
 USAGE
 }
 

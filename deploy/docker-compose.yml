@@ -350,11 +350,11 @@ services:
   # Spam inspection via rspamd. Enabled by RSPAMD_ENABLED=true in .env, which
   # is forwarded through the x-postal-env anchor and overrides the committed
   # config/postal.yml value (env beats the YAML for every rspamd.* key). The
-  # worker POSTs each message to rspamd on the shared network. Per-domain
-  # allow/block maps are rendered by `./deploy.sh rspamd` into ./config/rspamd,
-  # then bound in below. Only the generated artifacts are mounted, so the
-  # image's own /etc/rspamd config (modules, local.d defaults) stays intact and
-  # the generated fragment is picked up as just another local.d file.
+  # worker POSTs each message to rspamd on the shared network. `./deploy.sh
+  # rspamd` writes an empty multimap fragment into ./config/rspamd, bound in
+  # below; per-domain allow/block rules are applied by Postal, not here (see
+  # lib/render_rspamd.rb). Only the generated artifacts are mounted, so the
+  # image's own /etc/rspamd config (modules, local.d defaults) stays intact.
   rspamd:
     image: ${RSPAMD_IMAGE:-rspamd/rspamd:latest}
     profiles: ["rspamd"]

@@ -32,6 +32,12 @@ RSpec.describe "Management API Spam Feedback", type: :request do
       expect(rule.action).to eq("none")
     end
 
+    it "takes the rule's action from the request body" do
+      post feedback_path, params: { verdict: "spam", action: "mark_spam" }.to_json, headers: api_headers(token)
+      expect(response.status).to eq(201)
+      expect(domain.spam_rules.last.action).to eq("mark_spam")
+    end
+
     it "creates a blocklist rule from a spam verdict" do
       post feedback_path, params: { verdict: "spam" }.to_json, headers: api_headers(token)
       expect(response.status).to eq(201)
