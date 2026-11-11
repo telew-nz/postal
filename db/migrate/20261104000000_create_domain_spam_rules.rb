@@ -3,7 +3,9 @@
 class CreateDomainSpamRules < ActiveRecord::Migration[7.0]
 
   def change
-    create_table "domain_spam_rules", force: :cascade, options: "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" do |t|
+    return if table_exists?("domain_spam_rules")
+
+    create_table "domain_spam_rules", options: "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" do |t|
       t.string   "uuid"
       t.integer  "domain_id"
       t.string   "kind",        null: false      # allowlist | blocklist

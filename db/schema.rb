@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[7.0].define(version: 2026_09_23_120000) do
+ActiveRecord::Schema[7.0].define(version: 2026_11_07_120000) do
   create_table "additional_route_endpoints", id: :integer, charset: "utf8mb4", collation: "utf8mb4_general_ci", force: :cascade do |t|
     t.integer "route_id"
     t.string "endpoint_type"
@@ -332,6 +332,9 @@ ActiveRecord::Schema[7.0].define(version: 2026_09_23_120000) do
     t.datetime "revoked_at", precision: nil
     t.datetime "created_at", precision: nil
     t.datetime "updated_at", precision: nil
+    t.string "tier", default: "site", null: false
+    t.integer "server_id"
+    t.string "scope", default: "all", null: false
     t.index ["key"], name: "index_user_api_tokens_on_key", length: 8
     t.index ["user_id"], name: "index_user_api_tokens_on_user_id"
     t.index ["uuid"], name: "index_user_api_tokens_on_uuid", length: 8
