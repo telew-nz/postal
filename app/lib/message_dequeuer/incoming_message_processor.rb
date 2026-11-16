@@ -150,9 +150,13 @@ module MessageDequeuer
       relevant.find { |r| r.matches_subject?(subject) }
     end
 
-    # Apply a matched blocklist rule's action. reject drops the message; the
-    # others keep it but flag it in the way the rule asks. The rule is recorded
-    # on the message so per-rule statistics can be aggregated.
+    # Apply a matched blocklist rule's action. reject drops the message here; the
+    # others flag it in the way the rule asks and let it go on to be scanned and
+    # judged like any other message. A blocklist rule never shields a message:
+    # one the scanner scores at the server's failure threshold is still hard
+    # failed below, as it would be with no rule at all. Only an allowlist rule
+    # exempts a message from that. The rule is recorded on the message so
+    # per-rule statistics can be aggregated.
     def apply_blocklist_action(rule, domain, target)
       queued_message.message.update(matched_rule_id: rule.id, matched_rule_action: rule.action)
 
@@ -179,6 +183,8 @@ module MessageDequeuer
       queued_message.message.headers["subject"]&.first.to_s
     end
 
+    # The server's own limit, whatever a blocklist rule did with the message
+    # above: only an allowlisted message is let past it.
     def fail_if_spam
       return if @allowlisted_sender
       return if queued_message.message.spam_score < queued_message.server.spam_failure_threshold

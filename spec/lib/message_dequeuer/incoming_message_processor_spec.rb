@@ -243,6 +243,35 @@ module MessageDequeuer
       end
     end
 
+    %w[mark_spam add_header none].each do |action|
+      context "when a blocklisted sender's rule says #{action} and the scanner scores the message at the failure threshold" do
+        let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+        let(:message) do
+          MessageFactory.incoming(server, route: route) do |msg|
+            msg.mail_from = "admin@uts.nz"
+            msg.rcpt_to = "user@example.com"
+          end
+        end
+
+        before do
+          create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: action)
+          inspection_result = double("Result", spam_score: 100, threat: false, threat_message: nil, spam_checks: [])
+          allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+        end
+
+        it "hard fails on the server's threshold, as with no rule" do
+          processor.process
+          expect(message.deliveries.last).to have_attributes(status: "HardFail", details: /spam score is higher than the failure threshold for this server/i)
+        end
+
+        it "still records the rule it matched" do
+          processor.process
+          expect(message.reload.matched_rule_action).to eq action
+        end
+      end
+    end
+
     context "when the message subject matches a blocklist subject rule" do
       let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
 
