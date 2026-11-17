@@ -45,7 +45,11 @@ class UserAPIToken < ApplicationRecord
 
   # The endpoint scopes a key may be granted. "all" is the site key. A server
   # key may carry a comma-separated combination (e.g. "domains,spam,routes").
-  SCOPES = %w[all domains spam routes send].freeze
+  #
+  # "messages" is its own scope because it opens every message a server holds
+  # (bodies, headers, attachments, retry, removal from the queue). A key which
+  # only maintains spam rules has no need of that.
+  SCOPES = %w[all domains spam routes messages send].freeze
 
   belongs_to :user
   belongs_to :server, optional: true
@@ -74,6 +78,20 @@ class UserAPIToken < ApplicationRecord
     if tier == "site" && requested != ["all"]
       errors.add :scope, "must be 'all' for a site key"
     end
+  end
+
+  # Is this the instance-level key?
+  #
+  # @return [Boolean]
+  def site_tier?
+    tier == "site"
+  end
+
+  # Is this a key which is bound to one server?
+  #
+  # @return [Boolean]
+  def server_tier?
+    tier == "server"
   end
 
   # Does this key allow the given endpoint scope? Site keys allow everything;

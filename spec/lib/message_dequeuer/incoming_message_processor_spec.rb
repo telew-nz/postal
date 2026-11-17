@@ -166,7 +166,7 @@ module MessageDequeuer
 
       it "logs" do
         processor.process
-        expect(logger).to have_logged(/sender is on the blocklist/)
+        expect(logger).to have_logged(/message is from a sender blocklisted rule, hard failing/)
       end
 
       it "sets the message status to HardFail" do
@@ -177,12 +177,46 @@ module MessageDequeuer
       it "creates a HardFail delivery" do
         processor.process
         delivery = message.deliveries.last
-        expect(delivery).to have_attributes(status: "HardFail", details: /on the blocklist/i)
+        expect(delivery).to have_attributes(status: "HardFail", details: /Matches blocklist rule for example\.com/)
       end
 
       it "removes the queued message" do
         processor.process
         expect { queued_message.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+
+    context "when another server holds the recipient's domain name with a blocklist rule" do
+      # A domain's name is only unique per owner, so two servers can both have
+      # example.com. The other server's rules are not this server's.
+      let(:other_server) { create(:server) }
+      let(:other_domain) { create(:domain, owner: other_server, name: "example.com") }
+
+      let(:message) do
+        MessageFactory.incoming(server, route: route) do |msg|
+          msg.mail_from = "admin@uts.nz"
+          msg.rcpt_to = "user@example.com"
+        end
+      end
+
+      before do
+        create(:domain_spam_rule, domain: other_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: "reject")
+        inspection_result = double("Result", spam_score: 0, threat: false, threat_message: nil, spam_checks: [])
+        allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+      end
+
+      it "does not apply the other server's rule" do
+        processor.process
+        expect(message.reload.status).to_not eq "HardFail"
+        expect(message.reload.matched_rule_id).to be_nil
+      end
+
+      it "applies this server's own rule for the same name" do
+        own_domain = create(:domain, owner: server, name: "example.com")
+        own_rule = create(:domain_spam_rule, domain: own_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: "mark_spam")
+        processor.process
+        expect(message.reload.matched_rule_id).to eq own_rule.id
+        expect(message.reload.spam).to be true
       end
     end
 
@@ -206,6 +240,35 @@ module MessageDequeuer
         processor.process
         expect(message.reload.spam).to be true
         expect(message.reload.status).to_not eq "HardFail"
+      end
+    end
+
+    %w[mark_spam add_header none].each do |action|
+      context "when a blocklisted sender's rule says #{action} and the scanner scores the message at the failure threshold" do
+        let(:blocked_domain) { create(:domain, owner: server, name: "example.com") }
+
+        let(:message) do
+          MessageFactory.incoming(server, route: route) do |msg|
+            msg.mail_from = "admin@uts.nz"
+            msg.rcpt_to = "user@example.com"
+          end
+        end
+
+        before do
+          create(:domain_spam_rule, domain: blocked_domain, kind: "blocklist", match_type: "address", value: "admin@uts.nz", action: action)
+          inspection_result = double("Result", spam_score: 100, threat: false, threat_message: nil, spam_checks: [])
+          allow(Postal::MessageInspection).to receive(:scan).and_return(inspection_result)
+        end
+
+        it "hard fails on the server's threshold, as with no rule" do
+          processor.process
+          expect(message.deliveries.last).to have_attributes(status: "HardFail", details: /spam score is higher than the failure threshold for this server/i)
+        end
+
+        it "still records the rule it matched" do
+          processor.process
+          expect(message.reload.matched_rule_action).to eq action
+        end
       end
     end
 
@@ -288,7 +351,13 @@ module MessageDequeuer
 
       it "logs that the sender is allowlisted" do
         processor.process
-        expect(logger).to have_logged(/sender is on the allowlist/)
+        expect(logger).to have_logged(/message matches an allowlisted rule/)
+      end
+
+      it "does not mark the message as spam" do
+        processor.process
+        expect(message.reload.spam).to be_falsey
+        expect(message.reload.headers["x-postal-spam"]).to eq ["no"]
       end
     end
 

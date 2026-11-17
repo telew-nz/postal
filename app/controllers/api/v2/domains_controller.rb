@@ -26,10 +26,18 @@ module API
 
         # Administrators do not need to prove that they control a domain so the
         # verification step is skipped for them, exactly as it is in the web UI.
-        if current_user.admin?
+        #
+        # A server key is the exception. It is minted by an administrator but
+        # handed to the one tenant whose server it opens, so it does not carry
+        # the exemption: a domain created with it is proved like any other.
+        if current_user.admin? && !current_api_token.server_tier?
           new_domain.verification_method = "DNS"
           new_domain.verified_at = Time.now
         end
+
+        # A TXT record is the method a client can complete on its own, so it is
+        # what a domain gets when the request does not choose one.
+        new_domain.verification_method ||= "DNS"
 
         if new_domain.save
           render_created(DomainSerializer.new(new_domain).as_json)

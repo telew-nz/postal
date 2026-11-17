@@ -22,6 +22,7 @@ module API
           verified: record.verified?,
           verification_method: record.verification_method,
           verification_token: record.verification_token,
+          dns_verification_string: dns_verification_string,
           verified_at: iso8601(record.verified_at),
           dns_checked: record.dns_checked?,
           dns_ok: record.dns_ok?,
@@ -41,6 +42,18 @@ module API
       end
 
       private
+
+      # The value of the TXT record at the domain's apex which proves it, while
+      # that is still to be done. A client which only has the token cannot build
+      # this because the prefix comes from the installation's configuration.
+      #
+      # @return [String, nil]
+      def dns_verification_string
+        return nil if record.verified?
+        return nil unless record.verification_method == "DNS"
+
+        record.dns_verification_string
+      end
 
       # A domain can be attached to a server either through the legacy
       # server_id column or through the polymorphic owner association which is

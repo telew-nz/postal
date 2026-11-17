@@ -6,9 +6,8 @@ module API
     #
     # A client tells the API that a received message was either spam or ham. That
     # verdict is converted into a per-domain DomainSpamRule keyed on the sender
-    # address, so the rspamd maps rendered by `./deploy.sh rspamd` learn from the
-    # outcome: a "ham" verdict allowlists the sender, a "spam" verdict blocklists
-    # it. The rule is attached to the domain the message was received for, which
+    # address, which Postal applies to that domain's incoming mail from then on:
+    # a "ham" verdict allowlists the sender, a "spam" verdict blocklists it. The rule is attached to the domain the message was received for, which
     # is resolved from the message's recipients unless the client names a domain
     # explicitly with domain_uuid.
     class SpamFeedbackController < BaseController
@@ -41,7 +40,10 @@ module API
         end
 
         kind = params[:verdict] == "spam" ? "blocklist" : "allowlist"
-        action = params[:action].presence || (kind == "blocklist" ? "reject" : "none")
+        # params[:action] is the name of this controller action ("create"), which
+        # the router sets and which wins over a body field of the same name, so
+        # the rule's action is read from the request body itself.
+        action = request.request_parameters["action"].presence || (kind == "blocklist" ? "reject" : "none")
 
         rule = domain.spam_rules.find_or_initialize_by(kind: kind, match_type: "address", value: sender)
         rule.action = action
